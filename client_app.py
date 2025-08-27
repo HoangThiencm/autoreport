@@ -69,8 +69,8 @@ def get_drive_service() -> Tuple[object, str]:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, GDRIVE_SCOPES)
-            # SỬA LỖI: Chuyển sang phương thức run_console() để tránh lỗi localhost
-            creds = flow.run_console() 
+            # SỬA LỖI: Quay lại phương thức run_local_server() là phương thức đúng
+            creds = flow.run_local_server(port=0) 
         with open(DRIVE_TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
     
