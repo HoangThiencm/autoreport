@@ -103,18 +103,24 @@ def read_file_tasks(
     school_year_id: Optional[int] = None, skip: int = 0, limit: int = 100, 
     db: Session = Depends(get_db), x_api_key: Optional[str] = Header(None) 
 ):
-    tasks_from_db = crud.get_file_tasks(db, school_year_id=school_year_id, skip=skip, limit=limit)
-    response_tasks = []
-    submitted_task_ids = set()
+    current_school_id = None
     if x_api_key:
         current_school = crud.get_school_by_api_key(db, api_key=x_api_key)
         if not current_school:
             raise HTTPException(status_code=401, detail="API Key không hợp lệ.")
-        submitted_task_ids = crud.get_submitted_file_task_ids_for_school(db, school_id=current_school.id)
+        current_school_id = current_school.id
+
+    tasks_from_db, reminded_task_ids = crud.get_file_tasks(db, school_year_id=school_year_id, current_school_id=current_school_id, skip=skip, limit=limit)
+    response_tasks = []
+    
+    submitted_task_ids = set()
+    if current_school_id:
+        submitted_task_ids = crud.get_submitted_file_task_ids_for_school(db, school_id=current_school_id)
     
     for task in tasks_from_db:
         task_schema = schemas.FileTask.from_orm(task)
         task_schema.is_submitted = task.id in submitted_task_ids
+        task_schema.is_reminded = task.id in reminded_task_ids
         response_tasks.append(task_schema)
     return response_tasks
 
@@ -162,9 +168,6 @@ def read_data_reports(
     school_year_id: Optional[int] = None, skip: int = 0, limit: int = 100,
     db: Session = Depends(get_db), x_api_key: Optional[str] = Header(None)
 ):
-    reports_from_db = crud.get_data_reports(db, school_year_id=school_year_id, skip=skip, limit=limit)
-    response_reports = []
-    
     current_school_id = None
     if x_api_key:
         current_school = crud.get_school_by_api_key(db, api_key=x_api_key)
@@ -172,8 +175,12 @@ def read_data_reports(
             raise HTTPException(status_code=401, detail="API Key không hợp lệ.")
         current_school_id = current_school.id
 
+    reports_from_db, reminded_report_ids = crud.get_data_reports(db, school_year_id=school_year_id, current_school_id=current_school_id, skip=skip, limit=limit)
+    response_reports = []
+
     for report in reports_from_db:
         report_schema = schemas.DataReport.from_orm(report)
+        report_schema.is_reminded = report.id in reminded_report_ids
         if current_school_id:
             entry = crud.get_data_entry_for_school(db, report_id=report.id, school_id=current_school_id)
             if entry:
@@ -200,12 +207,23 @@ def mark_report_as_complete(
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo hoặc đã được xác nhận trước đó.")
     return {"message": "Đã đánh dấu báo cáo là hoàn thành."}
 
-# --- ENDPOINT MỚI ĐỂ RESET DATABASE ---
+# ENDPOINT MỚI CHO TÍNH NĂNG NHẮC NHỞ
+@app.post("/admin/remind/{task_type}/{task_id}", status_code=status.HTTP_200_OK)
+def send_reminders(task_type: str, task_id: int, db: Session = Depends(get_db)):
+    if task_type not in ["file", "data"]:
+        raise HTTPException(status_code=400, detail="Loại công việc không hợp lệ. Chỉ chấp nhận 'file' hoặc 'data'.")
+    
+    success, message = crud.create_reminders_for_task(db, task_type, task_id)
+    
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+        
+    return {"message": message}
+
 class ResetPayload(BaseModel):
     password: str
 
-# Mật khẩu đơn giản để bảo vệ chức năng reset
-RESET_PASSWORD = "admin123" 
+RESET_PASSWORD = "admin" 
 
 @app.post("/admin/reset-database", status_code=status.HTTP_200_OK)
 def handle_reset_database(payload: ResetPayload, db: Session = Depends(get_db)):

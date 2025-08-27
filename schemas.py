@@ -59,6 +59,7 @@ class FileTask(BaseModel):
     deadline: datetime
     created_at: datetime
     is_submitted: bool = False 
+    is_reminded: bool = False # THÊM MỚI
     class Config:
         from_attributes = True
 
@@ -88,6 +89,7 @@ class DataReport(BaseModel):
     deadline: datetime
     created_at: datetime
     is_submitted: bool = False
+    is_reminded: bool = False # THÊM MỚI
     sheet_url: Optional[str] = None
     class Config:
         from_attributes = True

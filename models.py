@@ -26,6 +26,8 @@ class School(Base):
     
     file_submissions = relationship("FileSubmission", back_populates="school", cascade="all, delete-orphan")
     data_entries = relationship("DataEntry", back_populates="school", cascade="all, delete-orphan")
+    # THÊM MỚI: Mối quan hệ với bảng nhắc nhở
+    reminders = relationship("TaskReminder", back_populates="school", cascade="all, delete-orphan")
 
 class FileTask(Base):
     __tablename__ = "file_tasks"
@@ -59,7 +61,6 @@ class DataReport(Base):
     deadline = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     template_url = Column(String, nullable=False)
-    # THÊM MỚI: Cột để theo dõi việc gửi email thông báo
     is_notification_sent = Column(Boolean, default=False)
     
     school_year_id = Column(Integer, ForeignKey("school_years.id"))
@@ -78,3 +79,14 @@ class DataEntry(Base):
     
     report = relationship("DataReport", back_populates="entries")
     school = relationship("School", back_populates="data_entries")
+
+# BẢNG MỚI: Lưu trạng thái nhắc nhở
+class TaskReminder(Base):
+    __tablename__ = "task_reminders"
+    id = Column(Integer, primary_key=True, index=True)
+    task_type = Column(String, nullable=False) # "file" hoặc "data"
+    task_id = Column(Integer, nullable=False)
+    school_id = Column(Integer, ForeignKey("schools.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    school = relationship("School", back_populates="reminders")

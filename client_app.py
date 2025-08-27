@@ -26,7 +26,6 @@ CONFIG_FILE = "client_config.txt"
 GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive']
 DRIVE_TOKEN_FILE = 'token.json'
 
-# --- PHẦN LOGIC GOOGLE DRIVE ---
 def get_drive_service():
     creds = None
     if os.path.exists(DRIVE_TOKEN_FILE):
@@ -54,26 +53,25 @@ def upload_file_to_drive(service, file_path, folder_id):
     except HttpError as error:
         return (None, f"Lỗi Google API: {error}")
 
-# --- WIDGET TÙY CHỈNH CHO DANH SÁCH YÊU CẦU ---
 class ListItemWidget(QWidget):
-    def __init__(self, item_id, title, deadline, is_submitted, parent=None):
+    def __init__(self, item_id, title, deadline, is_submitted, is_reminded, parent=None):
         super().__init__(parent)
         self.item_id = item_id
         layout = QHBoxLayout(self)
-        
         info_layout = QVBoxLayout()
         title_label = QLabel(f"<b>ID {item_id}: {title}</b>")
         deadline_label = QLabel(f"Hạn chót: {deadline}")
         info_layout.addWidget(title_label)
         info_layout.addWidget(deadline_label)
-        
         status_label = QLabel("Đã hoàn thành" if is_submitted else "Chưa thực hiện")
         status_label.setStyleSheet(f"color: {'#27ae60' if is_submitted else '#e74c3c'}; font-weight: bold;")
-        
         layout.addLayout(info_layout, 1)
         layout.addWidget(status_label, alignment=Qt.AlignCenter)
 
-# --- GIAO DIỆN CHÍNH ---
+        if is_reminded and not is_submitted:
+            self.setStyleSheet("background-color: #fff3cd;") # Màu vàng nhạt
+            title_label.setText(f"<b>ID {item_id}: {title} (Cần chú ý!)</b>")
+
 class ClientWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -82,76 +80,23 @@ class ClientWindow(QMainWindow):
             self.setWindowIcon(QIcon('baocao.ico'))
         self.setGeometry(200, 200, 1100, 800)
         self.api_key = self.load_api_key()
-        
-        # --- PHẦN STYLESHEET ĐÃ ĐƯỢC CẬP NHẬT ---
         self.setStyleSheet("""
             QMainWindow { background-color: #f4f6f9; }
-            QFrame#card { 
-                background-color: white; 
-                border-radius: 10px; 
-                border: 1px solid #dfe4ea; 
-                padding: 20px; 
-                margin: 10px; 
-            }
-            QLineEdit, QDateTimeEdit, QComboBox { 
-                border: 1px solid #ced4da; 
-                border-radius: 5px; 
-                padding: 10px; 
-                font-size: 16px; 
-            }
-            QPushButton { 
-                background-color: #3498db; 
-                color: white; 
-                border: none; 
-                padding: 12px 18px; 
-                border-radius: 5px; 
-                font-weight: bold; 
-                font-size: 16px; 
-            }
+            QFrame#card { background-color: white; border-radius: 10px; border: 1px solid #dfe4ea; padding: 20px; margin: 10px; }
+            QLineEdit, QDateTimeEdit, QComboBox { border: 1px solid #ced4da; border-radius: 5px; padding: 10px; font-size: 16px; }
+            QPushButton { background-color: #3498db; color: white; border: none; padding: 12px 18px; border-radius: 5px; font-weight: bold; font-size: 16px; }
             QPushButton:hover { background-color: #2980b9; }
             QLabel { font-weight: bold; color: #34495e; font-size: 16px; }
-            QTableWidget, QListWidget { 
-                border: 1px solid #dfe4ea; 
-                border-radius: 5px; 
-                background-color: #ffffff; 
-                font-size: 16px; 
-            }
-            QHeaderView::section { 
-                background-color: #34495e; 
-                color: white; 
-                padding: 8px; 
-                font-size: 15px; 
-                border: none;
-            }
-            
-            /* === PHẦN ĐIỀU CHỈNH GIAO DIỆN TAB === */
-            QTabWidget::pane { 
-                border: none;
-            }
-            QTabBar::tab {
-                background-color: #e4e7eb;
-                color: #566573;
-                padding: 12px 25px;
-                font-size: 16px;
-                font-weight: bold;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                margin-right: 2px;
-            }
-            QTabBar::tab:hover {
-                background-color: #d5dbdb;
-            }
-            QTabBar::tab:selected {
-                background-color: #3498db;
-                color: white;
-            }
+            QTableWidget, QListWidget { border: 1px solid #dfe4ea; border-radius: 5px; background-color: #ffffff; font-size: 16px; }
+            QHeaderView::section { background-color: #34495e; color: white; padding: 8px; font-size: 15px; border: none;}
+            QTabWidget::pane { border: none; }
+            QTabBar::tab { background-color: #e4e7eb; color: #566573; padding: 12px 25px; font-size: 16px; font-weight: bold; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px; }
+            QTabBar::tab:hover { background-color: #d5dbdb; }
+            QTabBar::tab:selected { background-color: #3498db; color: white; }
         """)
-        
         central_widget = QWidget()
         self.layout = QVBoxLayout(central_widget)
-        
         self.create_api_key_ui()
-        
         self.tab_widget = QTabWidget()
         self.file_submission_tab = QWidget()
         self.data_entry_tab = QWidget()
@@ -159,10 +104,8 @@ class ClientWindow(QMainWindow):
         self.tab_widget.addTab(self.data_entry_tab, "Báo cáo Nhập liệu (Google Sheet)")
         self.layout.addWidget(self.tab_widget)
         self.setCentralWidget(central_widget)
-        
         self.create_file_submission_ui()
         self.create_data_entry_ui()
-        
         self.update_ui_for_api_key()
         if self.api_key:
             self.fetch_school_info()
@@ -218,7 +161,6 @@ class ClientWindow(QMainWindow):
         tables_layout.addLayout(overdue_group)
         tasks_layout.addLayout(tables_layout)
         layout.addWidget(tasks_card)
-        
         submit_card = QFrame()
         submit_card.setObjectName("card")
         submit_layout = QVBoxLayout(submit_card)
@@ -230,46 +172,37 @@ class ClientWindow(QMainWindow):
         submit_layout.addWidget(self.submit_file_button)
         submit_layout.addWidget(self.ft_status_label)
         layout.addWidget(submit_card)
-
         self.submit_file_button.clicked.connect(self.submit_file_handler)
         self.ft_todo_table.itemSelectionChanged.connect(self.on_table_selection_changed)
         self.ft_overdue_table.itemSelectionChanged.connect(self.on_table_selection_changed)
 
     def create_data_entry_ui(self):
         layout = QVBoxLayout(self.data_entry_tab)
-        
         list_card = QFrame()
         list_card.setObjectName("card")
         list_layout = QVBoxLayout(list_card)
-        
         list_title_label = QLabel("Danh sách Báo cáo Nhập liệu")
         list_title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
         list_layout.addWidget(list_title_label)
-        
         self.load_dr_button = QPushButton("Tải lại danh sách")
         self.load_dr_button.clicked.connect(self.load_data_reports)
         list_layout.addWidget(self.load_dr_button)
-        
         self.dr_list_widget = QListWidget()
         list_layout.addWidget(self.dr_list_widget)
         layout.addWidget(list_card)
-
         action_card = QFrame()
         action_card.setObjectName("card")
         action_layout = QVBoxLayout(action_card)
         action_title = QLabel("Hành động")
         action_title.setFont(QFont("Segoe UI", 18, QFont.Bold))
         action_layout.addWidget(action_title)
-        
         self.open_sheet_button = QPushButton("Mở Trang tính để Nhập liệu")
         self.open_sheet_button.clicked.connect(self.open_google_sheet)
         action_layout.addWidget(self.open_sheet_button)
-
         self.mark_complete_button = QPushButton("Đánh dấu là đã hoàn thành")
         self.mark_complete_button.setStyleSheet("background-color: #27ae60;")
         self.mark_complete_button.clicked.connect(self.mark_as_complete)
         action_layout.addWidget(self.mark_complete_button)
-        
         self.dr_status_label = QLabel("Vui lòng chọn một báo cáo từ danh sách trên.")
         action_layout.addWidget(self.dr_status_label)
         layout.addWidget(action_card)
@@ -304,21 +237,26 @@ class ClientWindow(QMainWindow):
                 for task in tasks:
                     deadline_dt = datetime.strptime(task['deadline'], "%Y-%m-%dT%H:%M:%S")
                     is_submitted = task.get('is_submitted', False)
+                    is_reminded = task.get('is_reminded', False)
                     status_text = "Đã thực hiện" if is_submitted else "Chưa thực hiện"
                     status_item = QTableWidgetItem(status_text)
                     status_item.setTextAlignment(Qt.AlignCenter)
                     status_item.setForeground(QColor("#27ae60") if is_submitted else QColor("#e74c3c"))
-                    
-                    title_item = QTableWidgetItem(task['title'])
+                    title_text = task['title']
+                    if is_reminded and not is_submitted:
+                        title_text += " (Cần chú ý!)"
+                    title_item = QTableWidgetItem(title_text)
                     title_item.setData(Qt.UserRole, task['id'])
                     deadline_item = QTableWidgetItem(deadline_dt.strftime("%H:%M %d/%m/%Y"))
-                    
                     table = self.ft_todo_table if deadline_dt > now else self.ft_overdue_table
                     row = table.rowCount()
                     table.insertRow(row)
                     table.setItem(row, 0, title_item)
                     table.setItem(row, 1, deadline_item)
                     table.setItem(row, 2, status_item)
+                    if is_reminded and not is_submitted:
+                        for col in range(table.columnCount()):
+                            table.item(row, col).setBackground(QColor("#fff3cd"))
             else:
                 QMessageBox.critical(self, "Lỗi API", "Không thể tải danh sách công việc nộp file.")
         except requests.exceptions.ConnectionError:
@@ -329,38 +267,30 @@ class ClientWindow(QMainWindow):
         if not selected_table.selectedItems():
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một công việc để nộp file.")
             return
-
         row = selected_table.currentRow()
         task_id = selected_table.item(row, 0).data(Qt.UserRole)
         if "Đã thực hiện" in selected_table.item(row, 2).text():
             if QMessageBox.question(self, 'Xác nhận', "Công việc này đã được nộp. Bạn có muốn nộp lại file khác không?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.No:
                 return
-
         file_path, _ = QFileDialog.getOpenFileName(self, "Chọn file để nộp")
         if not file_path: return
-
         try:
             self.ft_status_label.setText("Đang lấy thông tin thư mục nộp file...")
             QApplication.processEvents()
-
             headers = {"x-api-key": self.api_key}
             response = requests.get(f"{API_URL}/file-tasks/{task_id}/upload-folder", headers=headers)
             if response.status_code != 200:
                 raise Exception(f"Lỗi lấy thư mục: {response.json().get('detail', response.text)}")
-            
             upload_folder_id = response.json().get("folder_id")
             if not upload_folder_id:
                  raise Exception("Server không trả về ID thư mục hợp lệ.")
-
             self.ft_status_label.setText("Đang kết nối Google Drive...")
             QApplication.processEvents()
             service = get_drive_service()
-            
             self.ft_status_label.setText("Đang tải file lên...")
             QApplication.processEvents()
             file_url, error = upload_file_to_drive(service, file_path, upload_folder_id)
             if error: raise Exception(error)
-            
             self.ft_status_label.setText("Đang báo cáo về server...")
             QApplication.processEvents()
             payload = {"task_id": task_id, "file_url": file_url}
@@ -386,10 +316,10 @@ class ClientWindow(QMainWindow):
                     deadline_dt = datetime.strptime(report['deadline'], "%Y-%m-%dT%H:%M:%S")
                     deadline_str = deadline_dt.strftime("%H:%M %d/%m/%Y")
                     is_submitted = report.get('is_submitted', False)
-                    
+                    is_reminded = report.get('is_reminded', False)
                     list_item = QListWidgetItem()
                     list_item.setData(Qt.UserRole, report)
-                    custom_widget = ListItemWidget(report['id'], report['title'], deadline_str, is_submitted)
+                    custom_widget = ListItemWidget(report['id'], report['title'], deadline_str, is_submitted, is_reminded)
                     list_item.setSizeHint(custom_widget.sizeHint())
                     self.dr_list_widget.addItem(list_item)
                     self.dr_list_widget.setItemWidget(list_item, custom_widget)
@@ -403,7 +333,6 @@ class ClientWindow(QMainWindow):
         if not current_item:
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một báo cáo từ danh sách.")
             return
-        
         report_data = current_item.data(Qt.UserRole)
         sheet_url = report_data.get('sheet_url')
         if sheet_url:
@@ -416,18 +345,14 @@ class ClientWindow(QMainWindow):
         if not current_item:
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một báo cáo từ danh sách.")
             return
-        
         report_data = current_item.data(Qt.UserRole)
         report_id = report_data['id']
-
         if report_data.get('is_submitted'):
             QMessageBox.information(self, "Thông báo", "Báo cáo này đã được đánh dấu hoàn thành trước đó.")
             return
-
         reply = QMessageBox.question(self, 'Xác nhận', "Bạn có chắc chắn đã nhập liệu xong và muốn đánh dấu là hoàn thành không?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.No:
             return
-
         self.dr_status_label.setText("Đang gửi xác nhận...")
         QApplication.processEvents()
         try:
