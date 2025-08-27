@@ -5,7 +5,7 @@ from database import SessionLocal
 import crud, models
 from email_sender import send_report_email
 
-ADMIN_EMAIL = "autoreport@thcsnguyencongtrubh.edu.vn"
+ADMIN_EMAIL = "panh05702@gmail.com"
 
 def check_deadlines_and_send_email():
     """
