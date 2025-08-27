@@ -169,7 +169,7 @@ class ClientWindow(QMainWindow):
         submit_card = QFrame()
         submit_card.setObjectName("card")
         submit_layout = QVBoxLayout(submit_card)
-        submit_title_label = QLabel("Nộp bài")
+        submit_title_label = QLabel("Nộp báo cáo")
         submit_title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
         submit_layout.addWidget(submit_title_label)
         self.submit_file_button = QPushButton("Nộp file cho công việc đã chọn")
@@ -287,7 +287,7 @@ class ClientWindow(QMainWindow):
         if not file_path: return
 
         try:
-            self.ft_status_label.setText("Đang lấy thông tin thư mục nộp bài...")
+            self.ft_status_label.setText("Đang lấy thông tin thư mục nộp file...")
             QApplication.processEvents()
 
             headers = {"x-api-key": self.api_key}
@@ -313,7 +313,7 @@ class ClientWindow(QMainWindow):
             payload = {"task_id": task_id, "file_url": file_url}
             response = requests.post(f"{API_URL}/file-submissions/", headers=headers, json=payload)
             if response.status_code == 200:
-                QMessageBox.information(self, "Hoàn tất", "Nộp bài thành công!")
+                QMessageBox.information(self, "Hoàn tất", "Nộp báo cáo thành công!")
                 self.ft_status_label.setText(f"Đã nộp bài thành công cho ID {task_id}.")
                 self.load_file_tasks()
             else:

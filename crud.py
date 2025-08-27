@@ -18,7 +18,7 @@ import gspread
 
 import models, schemas
 
-ROOT_DRIVE_FOLDER_ID = "13di1au2iwdr5cbz57b4q_SEK-RF5ZiiC"
+ROOT_DRIVE_FOLDER_ID = "1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L"
 
 SERVER_SCOPES = [
     'https://www.googleapis.com/auth/drive',

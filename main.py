@@ -205,7 +205,7 @@ class ResetPayload(BaseModel):
     password: str
 
 # Mật khẩu đơn giản để bảo vệ chức năng reset
-RESET_PASSWORD = "admin_reset_123" 
+RESET_PASSWORD = "admin123" 
 
 @app.post("/admin/reset-database", status_code=status.HTTP_200_OK)
 def handle_reset_database(payload: ResetPayload, db: Session = Depends(get_db)):

@@ -1,3 +1,4 @@
+# admin_app.py
 import sys
 import os
 import webbrowser
@@ -15,6 +16,18 @@ from PySide6.QtSvg import QSvgRenderer
 import clipboard
 
 API_URL = "https://auto-report-backend.onrender.com"
+
+# --- HÀM TIỆN ÍCH XỬ LÝ LỖI ---
+def handle_api_error(self, response, context_message):
+    """Hàm chung để xử lý và hiển thị lỗi từ API."""
+    try:
+        # Thử phân tích lỗi JSON trước
+        error_data = response.json()
+        detail = error_data.get('detail', response.text)
+    except requests.exceptions.JSONDecodeError:
+        # Nếu không phải JSON, hiển thị nội dung text (thường là HTML lỗi)
+        detail = response.text
+    QMessageBox.critical(self, "Lỗi", f"{context_message}\nLỗi từ server: {detail}")
 
 # --- WIDGET TÙY CHỈNH CHO MỘT MỤC TRONG DANH SÁCH TRƯỜNG ---
 class SchoolListItemWidget(QWidget):
@@ -59,7 +72,7 @@ class SchoolListItemWidget(QWidget):
                     if isinstance(main_window, AdminWindow):
                         main_window.load_schools()
                 else:
-                    QMessageBox.critical(self, "Lỗi", f"Không thể xóa trường.\nLỗi: {response.json().get('detail', response.text)}")
+                    handle_api_error(self, response, "Không thể xóa trường.")
             except requests.exceptions.ConnectionError:
                 QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -112,7 +125,7 @@ class DashboardCard(QPushButton):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.icon_label = QLabel()
-        self.icon_label.setFixedSize(60, 60) # Thu nhỏ icon một chút
+        self.icon_label.setFixedSize(60, 60)
         self.set_icon(icon_svg_data)
         layout.addWidget(self.icon_label)
         layout.addSpacing(15)
@@ -141,9 +154,8 @@ class AdminWindow(QMainWindow):
         self.setWindowTitle("Bảng điều khiển cho Quản trị viên")
         if os.path.exists('baocao.ico'):
             self.setWindowIcon(QIcon('baocao.ico'))
-        self.setGeometry(100, 100, 1280, 800) # Mở rộng cửa sổ một chút
+        self.setGeometry(100, 100, 1280, 800)
         
-        # Đặt font chữ chung cho toàn bộ ứng dụng
         font = QFont("Segoe UI", 10)
         self.setFont(font)
 
@@ -426,12 +438,10 @@ class AdminWindow(QMainWindow):
         self.dr_title_input = QLineEdit()
         design_layout.addWidget(self.dr_title_input, 2, 1)
 
-        # --- KHÔI PHỤC GIAO DIỆN CŨ ---
         design_layout.addWidget(QLabel("URL Google Sheet Mẫu:"), 3, 0)
         self.dr_template_url_input = QLineEdit()
         self.dr_template_url_input.setPlaceholderText("Dán link Google Sheet mẫu vào đây...")
         design_layout.addWidget(self.dr_template_url_input, 3, 1)
-        # --- KẾT THÚC KHÔI PHỤC ---
 
         design_layout.addWidget(QLabel("Hạn chót:"), 4, 0)
         self.dr_deadline_input = QDateTimeEdit(QDateTime.currentDateTime().addDays(7))
@@ -552,7 +562,7 @@ class AdminWindow(QMainWindow):
             elif response.status_code == 404:
                  QMessageBox.information(self, "Thông báo", "Không có file nào được nộp cho yêu cầu này.")
             else:
-                QMessageBox.critical(self, "Lỗi", f"Không thể tải file.\nServer báo lỗi: {response.text}")
+                handle_api_error(self, response, "Không thể tải file.")
         except requests.exceptions.RequestException as e:
             QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server để tải file.\nLỗi: {e}")
 
@@ -598,7 +608,7 @@ class AdminWindow(QMainWindow):
                     stt += 1
                 self.fr_table.resizeColumnsToContents()
             else:
-                QMessageBox.critical(self, "Lỗi API", f"Không thể tải dữ liệu báo cáo.\nLỗi: {response.text}")
+                handle_api_error(self, response, "Không thể tải dữ liệu báo cáo.")
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -648,7 +658,7 @@ class AdminWindow(QMainWindow):
                 
                 self.dr_table.resizeColumnsToContents()
             else:
-                QMessageBox.critical(self, "Lỗi API", f"Không thể tải dữ liệu báo cáo.\nLỗi: {response.text}")
+                handle_api_error(self, response, "Không thể tải dữ liệu báo cáo.")
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -678,7 +688,7 @@ class AdminWindow(QMainWindow):
                 self.school_name_input.clear()
                 self.load_schools()
             else:
-                QMessageBox.critical(self, "Lỗi", f"Không thể thêm trường.\nLỗi: {response.json().get('detail', response.text)}")
+                handle_api_error(self, response, "Không thể thêm trường.")
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -695,7 +705,7 @@ class AdminWindow(QMainWindow):
                 self.sy_name_input.clear()
                 self.load_school_years()
             else:
-                QMessageBox.critical(self, "Lỗi", f"Không thể thêm năm học.\nLỗi: {response.json().get('detail', response.text)}")
+                handle_api_error(self, response, "Không thể thêm năm học.")
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -761,7 +771,7 @@ class AdminWindow(QMainWindow):
                 self.ft_content_input.clear()
                 self.load_file_tasks()
             else:
-                QMessageBox.critical(self, "Lỗi", f"Không thể tạo yêu cầu.\nLỗi: {response.json().get('detail', response.text)}")
+                handle_api_error(self, response, "Không thể tạo yêu cầu.")
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -808,7 +818,7 @@ class AdminWindow(QMainWindow):
                 self.dr_template_url_input.clear()
                 self.load_data_reports()
             else:
-                QMessageBox.critical(self, "Lỗi", f"Không thể tạo báo cáo.\nLỗi: {response.json().get('detail', response.text)}")
+                handle_api_error(self, response, "Không thể tạo báo cáo.")
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
@@ -820,7 +830,7 @@ class AdminWindow(QMainWindow):
 
         danger_zone_card = QFrame()
         danger_zone_card.setObjectName("card")
-        danger_zone_card.setStyleSheet("#card { border: 2px solid #e74c3c; }") # Viền đỏ
+        danger_zone_card.setStyleSheet("#card { border: 2px solid #e74c3c; }")
         danger_layout = QVBoxLayout(danger_zone_card)
 
         title = QLabel("🔴 KHU VỰC NGUY HIỂM")
@@ -843,33 +853,29 @@ class AdminWindow(QMainWindow):
         layout.addStretch()
 
     def handle_reset_database(self):
-        # Hộp thoại 1: Nhập mật khẩu
         password, ok = QInputDialog.getText(self, "Yêu cầu Mật khẩu", "Vui lòng nhập mật khẩu quản trị để tiếp tục:", QLineEdit.Password)
         
         if not ok or not password:
-            return # Người dùng hủy
+            return
 
-        # Hộp thoại 2: Yêu cầu xác nhận bằng cách gõ lại
         confirm_text, ok = QInputDialog.getText(self, "Xác nhận Lần cuối", 'Hành động này sẽ xóa TẤT CẢ năm học, trường, và báo cáo.\nĐể xác nhận, vui lòng gõ chính xác "XOA DU LIEU" vào ô bên dưới:')
 
         if not ok or confirm_text != "XOA DU LIEU":
             QMessageBox.warning(self, "Đã hủy", "Chuỗi xác nhận không chính xác. Hành động đã được hủy.")
             return
 
-        # Gọi API
         try:
             payload = {"password": password}
             response = requests.post(f"{API_URL}/admin/reset-database", json=payload)
             
             if response.status_code == 200:
                 QMessageBox.information(self, "Thành công", "Đã xóa toàn bộ dữ liệu thành công.")
-                # Tải lại tất cả dữ liệu để làm mới giao diện
                 self.load_school_years()
                 self.load_schools()
                 self.load_file_tasks()
                 self.load_data_reports()
             else:
-                QMessageBox.critical(self, "Lỗi", f"Không thể xóa dữ liệu.\nLỗi từ server: {response.json().get('detail', response.text)}")
+                handle_api_error(self, response, "Không thể xóa dữ liệu.")
 
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
