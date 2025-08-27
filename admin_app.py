@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
     QPushButton, QListWidget, QMessageBox, QLineEdit, QLabel,
     QTabWidget, QTextEdit, QDateTimeEdit, QComboBox, QFrame, QGridLayout,
     QListWidgetItem, QDateEdit, QStackedWidget, QTableWidget,
-    QTableWidgetItem, QHeaderView, QFileDialog, QInputDialog
+    QTableWidgetItem, QHeaderView, QFileDialog, QInputDialog, QDialog,
+    QDialogButtonBox
 )
 from PySide6.QtCore import QDateTime, Qt, QDate, QUrl, QTimeZone, QByteArray, QUrlQuery
 from PySide6.QtGui import QIcon, QColor, QFont, QPixmap, QPainter
@@ -32,6 +33,7 @@ def handle_api_error(self, status_code, response_text, context_message):
     QMessageBox.critical(self, "Lỗi", f"{context_message}\nLỗi từ server (Code: {status_code}): {detail}")
 
 # --- CÁC WIDGET TÙY CHỈNH ---
+
 class SchoolListItemWidget(QWidget):
     def __init__(self, school_id, name, api_key, parent=None):
         super().__init__(parent)
@@ -72,6 +74,211 @@ class SchoolListItemWidget(QWidget):
                     main_window.load_schools()
                 ),
                 on_error=lambda status, err: handle_api_error(self, status, err, "Không thể xóa trường.")
+            )
+
+class SchoolYearListItemWidget(QWidget):
+    def __init__(self, sy_id, name, start_date, end_date, parent=None):
+        super().__init__(parent)
+        self.sy_id = sy_id
+        self.name = name
+        self.start_date = start_date
+        self.end_date = end_date
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        
+        self.info_label = QLabel(f"<b>{name}</b> ({start_date} - {end_date})")
+        self.edit_button = QPushButton("Sửa")
+        self.delete_button = QPushButton("Xóa")
+        
+        self.edit_button.setStyleSheet("background-color: #f39c12; padding: 5px 10px; font-size: 14px;")
+        self.delete_button.setStyleSheet("background-color: #e74c3c; padding: 5px 10px; font-size: 14px;")
+
+        layout.addWidget(self.info_label, 1)
+        layout.addWidget(self.edit_button)
+        layout.addWidget(self.delete_button)
+
+        self.delete_button.clicked.connect(self.delete_year)
+        self.edit_button.clicked.connect(self.edit_year)
+
+    def delete_year(self):
+        main_window = self.window()
+        if not isinstance(main_window, AdminWindow): return
+
+        reply = QMessageBox.question(self, 'Xác nhận xóa', f"Bạn có chắc chắn muốn xóa năm học '{self.name}' không? Hành động này không thể hoàn tác.", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            main_window.api_delete(
+                f"/school_years/{self.sy_id}",
+                on_success=lambda data, headers: (
+                    QMessageBox.information(self, "Thành công", "Đã xóa năm học."),
+                    main_window.load_school_years()
+                ),
+                on_error=lambda status, err: handle_api_error(self, status, err, "Không thể xóa năm học.")
+            )
+            
+    def edit_year(self):
+        main_window = self.window()
+        if not isinstance(main_window, AdminWindow): return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Chỉnh sửa Năm học")
+        layout = QGridLayout(dialog)
+
+        layout.addWidget(QLabel("Tên Năm học:"), 0, 0)
+        name_edit = QLineEdit(self.name)
+        layout.addWidget(name_edit, 0, 1)
+
+        layout.addWidget(QLabel("Ngày bắt đầu:"), 1, 0)
+        start_date_edit = QDateEdit(QDate.fromString(self.start_date, "yyyy-MM-dd"))
+        start_date_edit.setCalendarPopup(True)
+        layout.addWidget(start_date_edit, 1, 1)
+
+        layout.addWidget(QLabel("Ngày kết thúc:"), 2, 0)
+        end_date_edit = QDateEdit(QDate.fromString(self.end_date, "yyyy-MM-dd"))
+        end_date_edit.setCalendarPopup(True)
+        layout.addWidget(end_date_edit, 2, 1)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box, 3, 0, 1, 2)
+
+        if dialog.exec():
+            new_name = name_edit.text().strip()
+            if not new_name:
+                QMessageBox.warning(self, "Lỗi", "Tên năm học không được để trống.")
+                return
+
+            payload = {
+                "name": new_name,
+                "start_date": start_date_edit.date().toString("yyyy-MM-dd"),
+                "end_date": end_date_edit.date().toString("yyyy-MM-dd")
+            }
+            
+            main_window.api_put(
+                f"/school_years/{self.sy_id}",
+                payload,
+                on_success=lambda data, headers: (
+                    QMessageBox.information(self, "Thành công", "Đã cập nhật năm học."),
+                    main_window.load_school_years()
+                ),
+                on_error=lambda status, err: handle_api_error(self, status, err, "Không thể cập nhật năm học.")
+            )
+
+class FileTaskListItemWidget(QWidget):
+    def __init__(self, task_id, title, content, deadline, school_year_id, parent=None):
+        super().__init__(parent)
+        self.task_id = task_id
+        self.title = title
+        self.content = content
+        self.deadline_str = deadline # Deadline is already a formatted string
+        self.school_year_id = school_year_id
+
+        layout = QVBoxLayout(self)
+        top_layout = QHBoxLayout()
+        self.title_label = QLabel(f"<b>ID {task_id}: {title}</b>")
+        self.deadline_label = QLabel(f"Hạn chót: {deadline}")
+        self.deadline_label.setStyleSheet("color: #666; font-weight: normal;")
+        
+        top_layout.addWidget(self.title_label, 1)
+        top_layout.addWidget(self.deadline_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        self.edit_button = QPushButton("Sửa")
+        self.delete_button = QPushButton("Xóa")
+        self.edit_button.setStyleSheet("background-color: #f39c12; padding: 5px 10px; font-size: 14px;")
+        self.delete_button.setStyleSheet("background-color: #e74c3c; padding: 5px 10px; font-size: 14px;")
+        button_layout.addWidget(self.edit_button)
+        button_layout.addWidget(self.delete_button)
+
+        layout.addLayout(top_layout)
+        layout.addLayout(button_layout)
+
+        self.delete_button.clicked.connect(self.delete_task)
+        self.edit_button.clicked.connect(self.edit_task)
+
+    def delete_task(self):
+        main_window = self.window()
+        if not isinstance(main_window, AdminWindow): return
+
+        reply = QMessageBox.question(self, 'Xác nhận xóa', f"Bạn có chắc chắn muốn xóa yêu cầu '{self.title}' không?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            main_window.api_delete(
+                f"/file-tasks/{self.task_id}",
+                on_success=lambda data, headers: (
+                    QMessageBox.information(self, "Thành công", "Đã xóa yêu cầu."),
+                    main_window.load_file_tasks()
+                ),
+                on_error=lambda status, err: handle_api_error(self, status, err, "Không thể xóa yêu cầu.")
+            )
+
+    def edit_task(self):
+        main_window = self.window()
+        if not isinstance(main_window, AdminWindow): return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Chỉnh sửa Yêu cầu")
+        dialog.setMinimumWidth(500)
+        layout = QGridLayout(dialog)
+
+        layout.addWidget(QLabel("Tiêu đề:"), 0, 0)
+        title_edit = QLineEdit(self.title)
+        layout.addWidget(title_edit, 0, 1)
+
+        layout.addWidget(QLabel("Nội dung:"), 1, 0)
+        content_edit = QTextEdit(self.content)
+        layout.addWidget(content_edit, 1, 1)
+
+        layout.addWidget(QLabel("Hạn chót:"), 2, 0)
+        deadline_edit = QDateTimeEdit(QDateTime.fromString(self.deadline_str, "HH:mm dd/MM/yyyy"))
+        deadline_edit.setCalendarPopup(True)
+        deadline_edit.setDisplayFormat("HH:mm dd/MM/yyyy")
+        layout.addWidget(deadline_edit, 2, 1)
+
+        layout.addWidget(QLabel("Năm học:"), 3, 0)
+        sy_selector = QComboBox()
+        # Populate selector from main window's data
+        current_index = -1
+        for i in range(main_window.ft_school_year_selector.count()):
+            text = main_window.ft_school_year_selector.itemText(i)
+            data = main_window.ft_school_year_selector.itemData(i)
+            sy_selector.addItem(text, data)
+            if data == self.school_year_id:
+                current_index = i
+        if current_index != -1:
+            sy_selector.setCurrentIndex(current_index)
+        layout.addWidget(sy_selector, 3, 1)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box, 4, 0, 1, 2)
+
+        if dialog.exec():
+            new_title = title_edit.text().strip()
+            new_content = content_edit.toPlainText().strip()
+            new_sy_id = sy_selector.currentData()
+
+            if not all([new_title, new_content, new_sy_id]):
+                QMessageBox.warning(self, "Lỗi", "Vui lòng điền đầy đủ thông tin.")
+                return
+
+            payload = {
+                "title": new_title,
+                "content": new_content,
+                "deadline": deadline_edit.dateTime().toString("yyyy-MM-dd'T'HH:mm:ss"),
+                "school_year_id": new_sy_id
+            }
+            
+            main_window.api_put(
+                f"/file-tasks/{self.task_id}",
+                payload,
+                on_success=lambda data, headers: (
+                    QMessageBox.information(self, "Thành công", "Đã cập nhật yêu cầu."),
+                    main_window.load_file_tasks()
+                ),
+                on_error=lambda status, err: handle_api_error(self, status, err, "Không thể cập nhật yêu cầu.")
             )
 
 class ListItemWidget(QWidget):
@@ -205,6 +412,14 @@ class AdminWindow(QMainWindow):
         request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
         payload = QByteArray(json.dumps(data).encode('utf-8'))
         reply = self.network_manager.post(request, payload)
+        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+
+    def api_put(self, endpoint: str, data: dict, on_success: Callable, on_error: Callable):
+        url = QUrl(f"{API_URL}{endpoint}")
+        request = QNetworkRequest(url)
+        request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
+        payload = QByteArray(json.dumps(data).encode('utf-8'))
+        reply = self.network_manager.put(request, payload)
         reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
 
     def api_delete(self, endpoint: str, on_success: Callable, on_error: Callable):
@@ -554,11 +769,16 @@ class AdminWindow(QMainWindow):
                 selector.clear()
             self.school_years_list_widget_tab.clear()
             self.ft_filter_sy_selector.addItem("Tất cả", userData=None)
+            
             for sy in data:
-                item_text = f"ID {sy['id']}: {sy['name']} ({sy['start_date']} - {sy['end_date']})"
-                list_item = QListWidgetItem(item_text)
-                list_item.setData(Qt.UserRole, sy['id'])
+                # Create custom widget for each school year
+                custom_widget = SchoolYearListItemWidget(sy['id'], sy['name'], sy['start_date'], sy['end_date'])
+                list_item = QListWidgetItem()
+                list_item.setSizeHint(custom_widget.sizeHint())
                 self.school_years_list_widget_tab.addItem(list_item)
+                self.school_years_list_widget_tab.setItemWidget(list_item, custom_widget)
+                
+                # Populate selectors
                 for selector in [self.ft_school_year_selector, self.dr_school_year_selector, self.ft_filter_sy_selector]:
                     selector.addItem(sy['name'], userData=sy['id'])
         
@@ -617,11 +837,15 @@ class AdminWindow(QMainWindow):
             for task in data:
                 deadline_local = QDateTime.fromString(task['deadline'], "yyyy-MM-dd'T'HH:mm:ss")
                 deadline_str = deadline_local.toString("HH:mm dd/MM/yyyy")
+                
+                custom_widget = FileTaskListItemWidget(
+                    task['id'], task['title'], task['content'], deadline_str, task['school_year_id']
+                )
                 list_item = QListWidgetItem()
-                custom_widget = ListItemWidget(task['id'], task['title'], deadline_str)
                 list_item.setSizeHint(custom_widget.sizeHint())
                 self.file_tasks_list_widget.addItem(list_item)
                 self.file_tasks_list_widget.setItemWidget(list_item, custom_widget)
+                
                 self.fr_task_selector.addItem(f"ID {task['id']}: {task['title']}", userData=task['id'])
 
         def on_error(status, err):

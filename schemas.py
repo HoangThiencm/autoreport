@@ -3,15 +3,15 @@ from datetime import datetime, date
 from typing import List, Optional
 
 # --- SchoolYear & School Schemas ---
-class SchoolYearUpdate(BaseModel):
-    name: str
-
 class SchoolYearBase(BaseModel):
     name: str
     start_date: Optional[date] = None
     end_date: Optional[date] = None
 
 class SchoolYearCreate(SchoolYearBase):
+    pass
+
+class SchoolYearUpdate(SchoolYearBase):
     pass
 
 class SchoolYear(SchoolYearBase):
@@ -46,20 +46,23 @@ class FileSubmission(FileSubmissionBase):
     class Config:
         from_attributes = True
 
-class FileTaskCreate(BaseModel):
+class FileTaskBase(BaseModel):
     title: str
     content: str
     deadline: datetime
     school_year_id: int
 
-class FileTask(BaseModel):
+class FileTaskCreate(FileTaskBase):
+    pass
+
+class FileTaskUpdate(FileTaskBase):
+    pass
+
+class FileTask(FileTaskBase):
     id: int
-    title: str
-    content: str
-    deadline: datetime
     created_at: datetime
     is_submitted: bool = False 
-    is_reminded: bool = False # THÊM MỚI
+    is_reminded: bool = False
     class Config:
         from_attributes = True
 

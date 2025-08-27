@@ -81,6 +81,20 @@ def create_new_school_year(school_year: schemas.SchoolYearCreate, db: Session = 
 def read_school_years(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_school_years(db, skip=skip, limit=limit)
 
+@app.put("/school_years/{school_year_id}", response_model=schemas.SchoolYear)
+def update_school_year_by_id(school_year_id: int, school_year: schemas.SchoolYearUpdate, db: Session = Depends(get_db)):
+    db_school_year = crud.update_school_year(db, school_year_id=school_year_id, school_year_update=school_year)
+    if db_school_year is None:
+        raise HTTPException(status_code=404, detail="Năm học không tồn tại.")
+    return db_school_year
+
+@app.delete("/school_years/{school_year_id}")
+def delete_school_year_by_id(school_year_id: int, db: Session = Depends(get_db)):
+    deleted_school_year = crud.delete_school_year(db, school_year_id=school_year_id)
+    if not deleted_school_year:
+        raise HTTPException(status_code=404, detail="Năm học không tồn tại.")
+    return {"message": "Đã xóa năm học thành công."}
+
 @app.post("/schools/", response_model=schemas.School)
 def create_new_school(school: schemas.SchoolCreate, db: Session = Depends(get_db)):
     db_school = crud.create_school(db=db, school=school)
@@ -139,11 +153,14 @@ def read_file_tasks(
         submitted_task_ids = crud.get_submitted_file_task_ids_for_school(db, school_id=current_school_id)
     
     for task in tasks_from_db:
-        task_schema = schemas.FileTask.from_orm(task)
-        task_schema.is_submitted = task.id in submitted_task_ids
-        task_schema.is_reminded = task.id in reminded_task_ids
-        response_tasks.append(task_schema)
+        # Create a dictionary from the ORM object
+        task_dict = {c.name: getattr(task, c.name) for c in task.__table__.columns}
+        task_dict['is_submitted'] = task.id in submitted_task_ids
+        task_dict['is_reminded'] = task.id in reminded_task_ids
+        response_tasks.append(schemas.FileTask(**task_dict))
+
     return response_tasks
+
 
 @app.get("/file-tasks/{task_id}/status", response_model=schemas.FileTaskStatus)
 def read_file_task_status(task_id: int, db: Session = Depends(get_db)):
@@ -151,6 +168,20 @@ def read_file_task_status(task_id: int, db: Session = Depends(get_db)):
     if status_data is None:
         raise HTTPException(status_code=404, detail="Yêu cầu nộp file không tồn tại.")
     return status_data
+
+@app.put("/file-tasks/{task_id}", response_model=schemas.FileTask)
+def update_file_task_by_id(task_id: int, task: schemas.FileTaskUpdate, db: Session = Depends(get_db)):
+    db_task = crud.update_file_task(db, task_id=task_id, task_update=task)
+    if db_task is None:
+        raise HTTPException(status_code=404, detail="Yêu cầu không tồn tại.")
+    return db_task
+
+@app.delete("/file-tasks/{task_id}")
+def delete_file_task_by_id(task_id: int, db: Session = Depends(get_db)):
+    deleted_task = crud.delete_file_task(db, task_id=task_id)
+    if not deleted_task:
+        raise HTTPException(status_code=404, detail="Yêu cầu không tồn tại.")
+    return {"message": "Đã xóa yêu cầu thành công."}
 
 @app.get("/file-tasks/{task_id}/download-all")
 def download_all_submissions_for_task(task_id: int, db: Session = Depends(get_db)):

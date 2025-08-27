@@ -120,6 +120,24 @@ def create_school_year(db: Session, school_year: schemas.SchoolYearCreate):
         db.rollback()
         return None
 
+def delete_school_year(db: Session, school_year_id: int):
+    db_school_year = db.query(models.SchoolYear).filter(models.SchoolYear.id == school_year_id).first()
+    if db_school_year:
+        # Note: This does not delete the folder from Google Drive to prevent data loss.
+        db.delete(db_school_year)
+        db.commit()
+    return db_school_year
+
+def update_school_year(db: Session, school_year_id: int, school_year_update: schemas.SchoolYearUpdate):
+    db_school_year = db.query(models.SchoolYear).filter(models.SchoolYear.id == school_year_id).first()
+    if db_school_year:
+        update_data = school_year_update.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(db_school_year, key, value)
+        db.commit()
+        db.refresh(db_school_year)
+    return db_school_year
+
 def get_schools(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.School).order_by(models.School.name).offset(skip).limit(limit).all()
 
@@ -174,6 +192,23 @@ def create_file_task(db: Session, task: schemas.FileTaskCreate):
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
+    return db_task
+
+def delete_file_task(db: Session, task_id: int):
+    db_task = db.query(models.FileTask).filter(models.FileTask.id == task_id).first()
+    if db_task:
+        db.delete(db_task)
+        db.commit()
+    return db_task
+
+def update_file_task(db: Session, task_id: int, task_update: schemas.FileTaskUpdate):
+    db_task = db.query(models.FileTask).filter(models.FileTask.id == task_id).first()
+    if db_task:
+        update_data = task_update.dict(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(db_task, key, value)
+        db.commit()
+        db.refresh(db_task)
     return db_task
 
 def get_file_task_by_id(db: Session, task_id: int):
