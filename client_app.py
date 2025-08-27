@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, QDateTime, QTimer, Signal, QUrl, QUrlQuery, QByte
 from PySide6.QtGui import QFont, QIcon, QColor
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
-https://auto-report-backend.onrender.com
+API_URL = "https://auto-report-backend.onrender.com"
 CONFIG_FILE = "client_config.txt"
 GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive']
 DRIVE_TOKEN_FILE = 'token.json'
