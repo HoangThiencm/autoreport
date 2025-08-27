@@ -10,7 +10,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QDateEdit, QStackedWidget, QTableWidget, 
     QTableWidgetItem, QHeaderView, QFileDialog, QInputDialog
 )
-from PySide6.QtCore import QDateTime, Qt, QDate, QUrl
+# THÊM QTimeZone VÀO ĐÂY
+from PySide6.QtCore import QDateTime, Qt, QDate, QUrl, QTimeZone
 from PySide6.QtGui import QIcon, QColor, QFont, QDesktopServices, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 import clipboard
@@ -591,9 +592,10 @@ class AdminWindow(QMainWindow):
                     status_item.setForeground(QColor("green"))
                     self.fr_table.setItem(row_position, 2, status_item)
                     
-                    submitted_at_utc = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
-                    submitted_at_utc.setTimeSpec(Qt.UTC)
-                    submitted_at_local = submitted_at_utc.toLocalTime()
+                    # SỬA LỖI DEPRECATION TẠI ĐÂY
+                    submitted_at_dt = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
+                    submitted_at_dt.setTimeZone(QTimeZone("UTC"))
+                    submitted_at_local = submitted_at_dt.toLocalTime()
                     self.fr_table.setItem(row_position, 3, QTableWidgetItem(submitted_at_local.toString("HH:mm dd/MM/yyyy")))
                     stt += 1
 
@@ -640,9 +642,10 @@ class AdminWindow(QMainWindow):
                     status_item.setForeground(QColor("green"))
                     self.dr_table.setItem(row_position, 2, status_item)
 
-                    submitted_at_utc = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
-                    submitted_at_utc.setTimeSpec(Qt.UTC)
-                    submitted_at_local = submitted_at_utc.toLocalTime()
+                    # SỬA LỖI DEPRECATION TẠI ĐÂY
+                    submitted_at_dt = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
+                    submitted_at_dt.setTimeZone(QTimeZone("UTC"))
+                    submitted_at_local = submitted_at_dt.toLocalTime()
                     self.dr_table.setItem(row_position, 3, QTableWidgetItem(submitted_at_local.toString("HH:mm dd/MM/yyyy")))
                     stt += 1
                 
