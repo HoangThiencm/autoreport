@@ -3,7 +3,7 @@ credentials_oauth.json
 token.json
 client_config.txt
 service_account.json
-service_acount.json
+gmail_token.json
 # Database file
 app.db
 

@@ -6,8 +6,12 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from apscheduler.schedulers.background import BackgroundScheduler
 from pydantic import BaseModel
+
+# --- BẮT ĐẦU PHẦN CẬP NHẬT SCHEDULER ---
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor
+# --- KẾT THÚC PHẦN CẬP NHẬT SCHEDULER ---
 
 import models, schemas, crud
 from database import engine, SessionLocal
@@ -34,26 +38,43 @@ def get_school_from_api_key(x_api_key: str = Header(...), db: Session = Depends(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API Key không hợp lệ.")
     return db_school
 
-# --- Scheduler ---
-scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
+# --- Scheduler (ĐÃ CẬP NHẬT CẤU HÌNH) ---
+executors = {
+    'default': ThreadPoolExecutor(1)  # Chỉ cần 1 luồng cho tác vụ đơn giản này
+}
+scheduler = BackgroundScheduler(executors=executors, timezone="Asia/Ho_Chi_Minh")
 
 @app.on_event("startup")
 def start_scheduler():
-    scheduler.add_job(check_deadlines_and_send_email, 'interval', hours=1, id="deadline_check_job")
+    scheduler.add_job(
+        check_deadlines_and_send_email,
+        'interval',
+        seconds=30,
+        id="deadline_check_job",
+        replace_existing=True,
+        misfire_grace_time=60  # Cho phép trễ 60 giây nếu server bị treo tạm thời
+    )
     scheduler.start()
-    print("Đã khởi động bộ đếm giờ (Scheduler).")
+    print("Đã khởi động bộ đếm giờ (Scheduler) với cấu hình mới.")
+
 
 @app.on_event("shutdown")
 def shutdown_scheduler():
     scheduler.shutdown()
     print("Đã tắt bộ đếm giờ (Scheduler).")
 
+# --- Endpoints ---
+
+@app.get("/")
+def read_root():
+    return {"message": "Auto Report API is running correctly."}
+
 # --- Endpoints cho SchoolYear và School ---
 @app.post("/school_years/", response_model=schemas.SchoolYear)
 def create_new_school_year(school_year: schemas.SchoolYearCreate, db: Session = Depends(get_db)):
     db_school_year = crud.create_school_year(db=db, school_year=school_year)
     if db_school_year is None:
-        raise HTTPException(status_code=500, detail="Không thể tạo thư mục trên Google Drive.")
+        raise HTTPException(status_code=500, detail="Không thể tạo thư mục trên Google Drive. Vui lòng kiểm tra lại cấu hình Service Account và quyền chia sẻ thư mục.")
     return db_school_year
 
 @app.get("/school_years/", response_model=List[schemas.SchoolYear])
@@ -207,7 +228,6 @@ def mark_report_as_complete(
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo hoặc đã được xác nhận trước đó.")
     return {"message": "Đã đánh dấu báo cáo là hoàn thành."}
 
-# ENDPOINT MỚI CHO TÍNH NĂNG NHẮC NHỞ
 @app.post("/admin/remind/{task_type}/{task_id}", status_code=status.HTTP_200_OK)
 def send_reminders(task_type: str, task_id: int, db: Session = Depends(get_db)):
     if task_type not in ["file", "data"]:

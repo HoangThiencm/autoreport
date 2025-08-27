@@ -1,57 +1,36 @@
-# admin_app.py
+# admin_app.py (REFACTORED TO USE QNetworkAccessManager)
 import sys
 import os
 import webbrowser
-import requests
+import requests # Chỉ dùng cho handle_api_error, không dùng cho gọi API chính
 import json
 from typing import Callable
-
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QListWidget, QMessageBox, QLineEdit, QLabel,
     QTabWidget, QTextEdit, QDateTimeEdit, QComboBox, QFrame, QGridLayout,
-    QListWidgetItem, QDateEdit, QStackedWidget, QTableWidget, 
+    QListWidgetItem, QDateEdit, QStackedWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QFileDialog, QInputDialog
 )
-from PySide6.QtCore import QDateTime, Qt, QDate, QUrl, QTimeZone, QThread, QObject, Signal
-from PySide6.QtGui import QIcon, QColor, QFont, QDesktopServices, QPixmap, QPainter
+from PySide6.QtCore import QDateTime, Qt, QDate, QUrl, QTimeZone, QByteArray, QUrlQuery
+from PySide6.QtGui import QIcon, QColor, QFont, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+
 import clipboard
 
-API_URL = "https://auto-report-backend.onrender.com"
+https://auto-report-backend.onrender.com
 
-# --- HỆ THỐNG ĐA LUỒNG ĐỂ CHỐNG LAG ---
-class Worker(QObject):
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(self, func: Callable, *args, **kwargs):
-        super().__init__()
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-
-    def run(self):
-        try:
-            # Sử dụng timeout cho request để tránh treo vĩnh viễn
-            if 'timeout' not in self.kwargs:
-                self.kwargs['timeout'] = 30 # 30 giây
-            result = self.func(*self.args, **self.kwargs)
-            self.finished.emit(result)
-        except requests.exceptions.RequestException as e:
-            self.error.emit(f"Lỗi mạng: {e}")
-        except Exception as e:
-            self.error.emit(str(e))
-
-def handle_api_error(self, response, context_message):
+def handle_api_error(self, status_code, response_text, context_message):
+    detail = response_text
     try:
-        error_data = response.json()
-        detail = error_data.get('detail', response.text)
-    except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
-        detail = response.text
-    QMessageBox.critical(self, "Lỗi", f"{context_message}\nLỗi từ server: {detail}")
-    
+        error_data = json.loads(response_text)
+        detail = error_data.get('detail', response_text)
+    except json.JSONDecodeError:
+        pass # detail is already the response_text
+    QMessageBox.critical(self, "Lỗi", f"{context_message}\nLỗi từ server (Code: {status_code}): {detail}")
+
 # --- CÁC WIDGET TÙY CHỈNH ---
 class SchoolListItemWidget(QWidget):
     def __init__(self, school_id, name, api_key, parent=None):
@@ -75,7 +54,7 @@ class SchoolListItemWidget(QWidget):
         layout.addWidget(self.key_label, 2)
         layout.addWidget(self.copy_button)
         layout.addWidget(self.delete_button)
-        
+
     def copy_api_key(self):
         clipboard.copy(self.api_key)
         QMessageBox.information(self, "Thành công", "Đã sao chép API Key vào clipboard!")
@@ -83,19 +62,17 @@ class SchoolListItemWidget(QWidget):
     def delete_school(self):
         main_window = self.window()
         if not isinstance(main_window, AdminWindow): return
-        
+
         reply = QMessageBox.question(self, 'Xác nhận xóa', f"Bạn có chắc chắn muốn xóa trường '{self.name_label.text().strip('<b></b>')}' không?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
-            # Tác vụ nhanh, không cần thread
-            try:
-                response = requests.delete(f"{API_URL}/schools/{self.school_id}")
-                if response.status_code == 200:
-                    QMessageBox.information(self, "Thành công", "Đã xóa trường thành công.")
+            main_window.api_delete(
+                f"/schools/{self.school_id}",
+                on_success=lambda data, headers: (
+                    QMessageBox.information(self, "Thành công", "Đã xóa trường thành công."),
                     main_window.load_schools()
-                else:
-                    handle_api_error(self, response, "Không thể xóa trường.")
-            except requests.exceptions.ConnectionError:
-                QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
+                ),
+                on_error=lambda status, err: handle_api_error(self, status, err, "Không thể xóa trường.")
+            )
 
 class ListItemWidget(QWidget):
     def __init__(self, item_id, title, deadline, parent=None):
@@ -151,7 +128,7 @@ class DashboardCard(QPushButton):
 class AdminWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.running_threads = [] # THAY ĐỔI: Danh sách để quản lý các luồng
+        self.network_manager = QNetworkAccessManager(self)
         self.setWindowTitle("Bảng điều khiển cho Quản trị viên")
         if os.path.exists('baocao.ico'):
             self.setWindowIcon(QIcon('baocao.ico'))
@@ -188,27 +165,71 @@ class AdminWindow(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.dashboard_tab)
         
         self.load_all_initial_data()
+
+    def _handle_reply(self, reply: QNetworkReply, on_success: Callable, on_error: Callable):
+        if reply.error() == QNetworkReply.NoError:
+            status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+            headers = {
+                bytes(key).decode('utf-8'): bytes(reply.rawHeader(bytes(key).decode('utf-8'))).decode('utf-8')
+                for key in reply.rawHeaderList()
+            }
+            response_data = bytes(reply.readAll()).decode('utf-8')
+            
+            if 200 <= status_code < 300:
+                try:
+                    json_data = json.loads(response_data) if response_data else {}
+                    on_success(json_data, headers)
+                except json.JSONDecodeError:
+                    on_error(status_code, "Lỗi giải mã JSON từ server.")
+            else:
+                on_error(status_code, response_data)
+        else:
+            on_error(0, f"Lỗi mạng: {reply.errorString()}")
+        reply.deleteLater()
         
-    def run_in_thread(self, func, on_finish, on_error, *args, **kwargs):
-        thread = QThread()
-        worker = Worker(func, *args, **kwargs)
-        worker.moveToThread(thread)
+    def api_get(self, endpoint: str, on_success: Callable, on_error: Callable, params: dict = None):
+        url = QUrl(f"{API_URL}{endpoint}")
+        if params:
+            query = QUrlQuery()
+            for key, value in params.items():
+                query.addQueryItem(key, str(value))
+            url.setQuery(query)
         
-        thread.started.connect(worker.run)
-        worker.finished.connect(on_finish)
-        worker.error.connect(on_error)
-        
-        # Dọn dẹp sau khi hoàn thành
-        worker.finished.connect(thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        
-        # THAY ĐỔI: Xóa thread khỏi danh sách quản lý khi nó kết thúc
-        thread.finished.connect(lambda: self.running_threads.remove(thread))
-        
-        # THAY ĐỔI: Lưu tham chiếu đến thread để nó không bị hủy sớm
-        self.running_threads.append(thread)
-        thread.start()
+        request = QNetworkRequest(url)
+        reply = self.network_manager.get(request)
+        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+
+    def api_post(self, endpoint: str, data: dict, on_success: Callable, on_error: Callable):
+        url = QUrl(f"{API_URL}{endpoint}")
+        request = QNetworkRequest(url)
+        request.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
+        payload = QByteArray(json.dumps(data).encode('utf-8'))
+        reply = self.network_manager.post(request, payload)
+        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+
+    def api_delete(self, endpoint: str, on_success: Callable, on_error: Callable):
+        url = QUrl(f"{API_URL}{endpoint}")
+        request = QNetworkRequest(url)
+        reply = self.network_manager.deleteResource(request)
+        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+    
+    def api_download(self, endpoint: str, on_success: Callable, on_error: Callable):
+        url = QUrl(f"{API_URL}{endpoint}")
+        request = QNetworkRequest(url)
+        reply = self.network_manager.get(request)
+
+        def handle_download_reply():
+            if reply.error() == QNetworkReply.NoError:
+                status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+                if status_code == 200:
+                    on_success(reply.readAll())
+                else:
+                    on_error(status_code, bytes(reply.readAll()).decode('utf-8'))
+            else:
+                on_error(0, f"Lỗi mạng: {reply.errorString()}")
+            reply.deleteLater()
+            
+        reply.finished.connect(handle_download_reply)
 
     def load_all_initial_data(self):
         self.load_school_years()
@@ -246,7 +267,7 @@ class AdminWindow(QMainWindow):
             dashboard_layout.addWidget(card, i // 3, i % 3)
         layout.addLayout(dashboard_layout)
         layout.addStretch(1)
-        
+
     def create_school_years_tab(self):
         layout = QVBoxLayout(self.school_years_tab)
         back_button = QPushButton("⬅️ Quay lại trang chủ")
@@ -478,381 +499,6 @@ class AdminWindow(QMainWindow):
         report_layout.addWidget(self.dr_table)
         layout.addWidget(report_card)
 
-    # --- CÁC HÀM XỬ LÝ SỰ KIỆN VÀ TẢI DỮ LIỆU ĐÃ ĐƯỢC NÂNG CẤP ---
-
-    def add_new_school_year(self):
-        name = self.sy_name_input.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập tên năm học.")
-            return
-        payload = {"name": name, "start_date": self.sy_start_date_input.date().toString("yyyy-MM-dd"), "end_date": self.sy_end_date_input.date().toString("yyyy-MM-dd")}
-        
-        self.add_sy_button.setDisabled(True)
-        self.add_sy_button.setText("Đang xử lý...")
-
-        def on_finish(response):
-            if response.status_code == 200:
-                QMessageBox.information(self, "Thành công", f"Đã thêm năm học '{name}' thành công.")
-                self.sy_name_input.clear()
-                self.load_school_years()
-            else:
-                handle_api_error(self, response, "Không thể thêm năm học.")
-            self.add_sy_button.setDisabled(False)
-            self.add_sy_button.setText("Thêm Năm học")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            self.add_sy_button.setDisabled(False)
-            self.add_sy_button.setText("Thêm Năm học")
-
-        self.run_in_thread(requests.post, on_finish, on_error, f"{API_URL}/school_years/", json=payload)
-
-    def load_school_years(self):
-        def on_finish(response):
-            if response.status_code == 200:
-                selectors = [self.ft_school_year_selector, self.ft_filter_sy_selector, self.dr_school_year_selector]
-                for selector in selectors:
-                    selector.clear()
-                self.school_years_list_widget_tab.clear()
-                self.ft_filter_sy_selector.addItem("Tất cả", userData=None)
-                for sy in response.json():
-                    item_text = f"ID {sy['id']}: {sy['name']} ({sy['start_date']} - {sy['end_date']})"
-                    list_item = QListWidgetItem(item_text)
-                    list_item.setData(Qt.UserRole, sy['id'])
-                    self.school_years_list_widget_tab.addItem(list_item)
-                    for selector in [self.ft_school_year_selector, self.dr_school_year_selector, self.ft_filter_sy_selector]:
-                        selector.addItem(sy['name'], userData=sy['id'])
-        def on_error(err_msg):
-             print(f"Lỗi tải năm học: {err_msg}")
-
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/school_years/")
-
-    def load_schools(self):
-        def on_finish(response):
-             if response.status_code == 200:
-                self.schools_list_widget.clear()
-                for school in response.json():
-                    list_item = QListWidgetItem()
-                    custom_widget = SchoolListItemWidget(school['id'], school['name'], school['api_key'], parent=self.schools_list_widget)
-                    list_item.setSizeHint(custom_widget.sizeHint())
-                    self.schools_list_widget.addItem(list_item)
-                    self.schools_list_widget.setItemWidget(list_item, custom_widget)
-        def on_error(err_msg):
-            print(f"Lỗi tải trường học: {err_msg}")
-        
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/schools/")
-
-    def add_new_school(self):
-        school_name = self.school_name_input.text().strip()
-        if not school_name:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập tên trường.")
-            return
-        
-        self.add_school_button.setDisabled(True)
-        self.add_school_button.setText("Đang thêm...")
-
-        def on_finish(response):
-            if response.status_code == 200:
-                QMessageBox.information(self, "Thành công", f"Đã thêm trường '{school_name}' thành công.")
-                self.school_name_input.clear()
-                self.load_schools()
-            else:
-                handle_api_error(self, response, "Không thể thêm trường.")
-            self.add_school_button.setDisabled(False)
-            self.add_school_button.setText("Thêm Trường")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            self.add_school_button.setDisabled(False)
-            self.add_school_button.setText("Thêm Trường")
-
-        self.run_in_thread(requests.post, on_finish, on_error, f"{API_URL}/schools/", json={"name": school_name})
-
-    def load_file_tasks(self):
-        school_year_id = self.ft_filter_sy_selector.currentData()
-        params = {}
-        if school_year_id:
-            params['school_year_id'] = school_year_id
-
-        def on_finish(response):
-            if response.status_code == 200:
-                self.file_tasks_list_widget.clear()
-                self.fr_task_selector.clear()
-                for task in response.json():
-                    deadline_local = QDateTime.fromString(task['deadline'], "yyyy-MM-dd'T'HH:mm:ss")
-                    deadline_str = deadline_local.toString("HH:mm dd/MM/yyyy")
-                    list_item = QListWidgetItem()
-                    custom_widget = ListItemWidget(task['id'], task['title'], deadline_str)
-                    list_item.setSizeHint(custom_widget.sizeHint())
-                    self.file_tasks_list_widget.addItem(list_item)
-                    self.file_tasks_list_widget.setItemWidget(list_item, custom_widget)
-                    self.fr_task_selector.addItem(f"ID {task['id']}: {task['title']}", userData=task['id'])
-        
-        def on_error(err_msg):
-            print(f"Lỗi tải công việc nộp file: {err_msg}")
-
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/file-tasks/", params=params)
-
-    def add_new_file_task(self):
-        school_year_id = self.ft_school_year_selector.currentData()
-        title = self.ft_title_input.text().strip()
-        content = self.ft_content_input.toPlainText().strip()
-        if not title or not content or not school_year_id:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập đầy đủ thông tin.")
-            return
-
-        self.add_ft_button.setDisabled(True)
-        self.add_ft_button.setText("Đang phát hành...")
-        deadline_local = self.ft_deadline_input.dateTime()
-        payload = {"title": title, "content": content, "deadline": deadline_local.toString("yyyy-MM-dd'T'HH:mm:ss"), "school_year_id": school_year_id}
-        
-        def on_finish(response):
-            if response.status_code == 200:
-                QMessageBox.information(self, "Thành công", "Đã ban hành yêu cầu mới.")
-                self.ft_title_input.clear()
-                self.ft_content_input.clear()
-                self.load_file_tasks()
-            else:
-                handle_api_error(self, response, "Không thể tạo yêu cầu.")
-            self.add_ft_button.setDisabled(False)
-            self.add_ft_button.setText("Phát hành")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            self.add_ft_button.setDisabled(False)
-            self.add_ft_button.setText("Phát hành")
-
-        self.run_in_thread(requests.post, on_finish, on_error, f"{API_URL}/file-tasks/", json=payload)
-
-    def load_data_reports(self):
-        def on_finish(response):
-            if response.status_code == 200:
-                self.data_reports_list_widget.clear()
-                self.dr_report_selector.clear()
-                for report in response.json():
-                    deadline_local = QDateTime.fromString(report['deadline'], "yyyy-MM-dd'T'HH:mm:ss")
-                    deadline_str = deadline_local.toString("HH:mm dd/MM/yyyy")
-                    list_item = QListWidgetItem()
-                    custom_widget = ListItemWidget(report['id'], report['title'], deadline_str)
-                    list_item.setSizeHint(custom_widget.sizeHint())
-                    self.data_reports_list_widget.addItem(list_item)
-                    self.data_reports_list_widget.setItemWidget(list_item, custom_widget)
-                    self.dr_report_selector.addItem(f"ID {report['id']}: {report['title']}", userData=report['id'])
-        
-        def on_error(err_msg):
-            print(f"Lỗi tải báo cáo nhập liệu: {err_msg}")
-
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/data-reports/")
-
-    def add_new_data_report(self):
-        school_year_id = self.dr_school_year_selector.currentData()
-        title = self.dr_title_input.text().strip()
-        template_url = self.dr_template_url_input.text().strip()
-        if not all([title, school_year_id, template_url]):
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập đầy đủ Tiêu đề, URL và chọn Năm học.")
-            return
-
-        self.add_dr_button.setDisabled(True)
-        self.add_dr_button.setText("Đang ban hành...")
-        deadline_local = self.dr_deadline_input.dateTime()
-        payload = {"title": title, "deadline": deadline_local.toString("yyyy-MM-dd'T'HH:mm:ss"), "school_year_id": school_year_id, "template_url": template_url}
-        
-        def on_finish(response):
-            if response.status_code == 200:
-                QMessageBox.information(self, "Thành công", "Đã ban hành báo cáo nhập liệu mới.")
-                self.dr_title_input.clear()
-                self.dr_template_url_input.clear()
-                self.load_data_reports()
-            else:
-                handle_api_error(self, response, "Không thể tạo báo cáo.")
-            self.add_dr_button.setDisabled(False)
-            self.add_dr_button.setText("Ban hành Báo cáo")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            self.add_dr_button.setDisabled(False)
-            self.add_dr_button.setText("Ban hành Báo cáo")
-
-        self.run_in_thread(requests.post, on_finish, on_error, f"{API_URL}/data-reports/", json=payload)
-
-    def load_file_task_report(self):
-        task_id = self.fr_task_selector.currentData()
-        if task_id is None:
-            self.fr_table.setRowCount(0)
-            self.fr_title_label.setText("Vui lòng chọn một yêu cầu")
-            return
-        
-        self.fr_refresh_button.setDisabled(True)
-        self.fr_refresh_button.setText("Đang tải...")
-
-        def on_finish(response):
-            if response.status_code == 200:
-                data = response.json()
-                task_title = data.get('task', {}).get('title', '')
-                self.fr_title_label.setText(f"Báo cáo chi tiết cho: {task_title}")
-                submitted = data.get('submitted_schools', [])
-                not_submitted = data.get('not_submitted_schools', [])
-                self.fr_table.setRowCount(0)
-                stt = 1
-                for school_info in submitted:
-                    row_position = self.fr_table.rowCount()
-                    self.fr_table.insertRow(row_position)
-                    self.fr_table.setItem(row_position, 0, QTableWidgetItem(str(stt)))
-                    self.fr_table.setItem(row_position, 1, QTableWidgetItem(school_info['name']))
-                    status_item = QTableWidgetItem("Đã nộp")
-                    status_item.setForeground(QColor("green"))
-                    self.fr_table.setItem(row_position, 2, status_item)
-                    submitted_at_dt = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
-                    submitted_at_dt.setTimeZone(QTimeZone("UTC"))
-                    submitted_at_local = submitted_at_dt.toLocalTime()
-                    self.fr_table.setItem(row_position, 3, QTableWidgetItem(submitted_at_local.toString("HH:mm dd/MM/yyyy")))
-                    stt += 1
-                for school in not_submitted:
-                    row_position = self.fr_table.rowCount()
-                    self.fr_table.insertRow(row_position)
-                    self.fr_table.setItem(row_position, 0, QTableWidgetItem(str(stt)))
-                    self.fr_table.setItem(row_position, 1, QTableWidgetItem(school['name']))
-                    status_item = QTableWidgetItem("Chưa nộp")
-                    status_item.setForeground(QColor("red"))
-                    self.fr_table.setItem(row_position, 2, status_item)
-                    stt += 1
-                self.fr_table.resizeColumnsToContents()
-            else:
-                handle_api_error(self, response, "Không thể tải dữ liệu báo cáo.")
-            self.fr_refresh_button.setDisabled(False)
-            self.fr_refresh_button.setText("Làm mới")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            self.fr_refresh_button.setDisabled(False)
-            self.fr_refresh_button.setText("Làm mới")
-
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/file-tasks/{task_id}/status")
-
-    def load_data_entry_report(self):
-        report_id = self.dr_report_selector.currentData()
-        if report_id is None:
-            self.dr_table.setRowCount(0)
-            self.dr_title_label.setText("Vui lòng chọn một báo cáo")
-            return
-        
-        self.dr_refresh_button.setDisabled(True)
-        self.dr_refresh_button.setText("Đang tải...")
-
-        def on_finish(response):
-            if response.status_code == 200:
-                data = response.json()
-                report_title = data.get('report', {}).get('title', '')
-                self.dr_title_label.setText(f"Báo cáo chi tiết cho: {report_title}")
-                submitted = data.get('submitted_schools', [])
-                not_submitted = data.get('not_submitted_schools', [])
-                self.dr_table.setRowCount(0)
-                stt = 1
-                for school_info in submitted:
-                    row_position = self.dr_table.rowCount()
-                    self.dr_table.insertRow(row_position)
-                    self.dr_table.setItem(row_position, 0, QTableWidgetItem(str(stt)))
-                    self.dr_table.setItem(row_position, 1, QTableWidgetItem(school_info['name']))
-                    status_item = QTableWidgetItem("Đã hoàn thành")
-                    status_item.setForeground(QColor("green"))
-                    self.dr_table.setItem(row_position, 2, status_item)
-                    submitted_at_dt = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
-                    submitted_at_dt.setTimeZone(QTimeZone("UTC"))
-                    submitted_at_local = submitted_at_dt.toLocalTime()
-                    self.dr_table.setItem(row_position, 3, QTableWidgetItem(submitted_at_local.toString("HH:mm dd/MM/yyyy")))
-                    stt += 1
-                for school in not_submitted:
-                    row_position = self.dr_table.rowCount()
-                    self.dr_table.insertRow(row_position)
-                    self.dr_table.setItem(row_position, 0, QTableWidgetItem(str(stt)))
-                    self.dr_table.setItem(row_position, 1, QTableWidgetItem(school['name']))
-                    status_item = QTableWidgetItem("Chưa thực hiện")
-                    status_item.setForeground(QColor("red"))
-                    self.dr_table.setItem(row_position, 2, status_item)
-                    stt += 1
-                self.dr_table.resizeColumnsToContents()
-            else:
-                handle_api_error(self, response, "Không thể tải dữ liệu báo cáo.")
-            self.dr_refresh_button.setDisabled(False)
-            self.dr_refresh_button.setText("Làm mới")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            self.dr_refresh_button.setDisabled(False)
-            self.dr_refresh_button.setText("Làm mới")
-            
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/data-reports/{report_id}/status")
-
-    def send_reminder_handler(self, task_type):
-        task_id = None
-        button_to_disable = None
-        if task_type == "file":
-            task_id = self.fr_task_selector.currentData()
-            button_to_disable = self.fr_remind_button
-        elif task_type == "data":
-            task_id = self.dr_report_selector.currentData()
-            button_to_disable = self.dr_remind_button
-
-        if task_id is None:
-            QMessageBox.warning(self, "Chưa chọn", "Vui lòng chọn một yêu cầu để gửi nhắc nhở.")
-            return
-
-        reply = QMessageBox.question(self, 'Xác nhận', "Bạn có chắc chắn muốn gửi nhắc nhở đến tất cả các trường chưa nộp báo cáo này không?", QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.No: return
-
-        button_to_disable.setDisabled(True)
-        button_to_disable.setText("Đang gửi...")
-
-        def on_finish(response):
-            if response.status_code == 200:
-                QMessageBox.information(self, "Thành công", response.json().get("message", "Đã gửi nhắc nhở thành công."))
-            else:
-                handle_api_error(self, response, "Không thể gửi nhắc nhở.")
-            button_to_disable.setDisabled(False)
-            button_to_disable.setText("Gửi nhắc nhở")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
-            button_to_disable.setDisabled(False)
-            button_to_disable.setText("Gửi nhắc nhở")
-
-        self.run_in_thread(requests.post, on_finish, on_error, f"{API_URL}/admin/remind/{task_type}/{task_id}")
-
-    def download_all_files(self):
-        task_id = self.fr_task_selector.currentData()
-        if task_id is None:
-            QMessageBox.warning(self, "Chưa chọn", "Vui lòng chọn một yêu cầu để tải file.")
-            return
-        
-        task_name = self.fr_task_selector.currentText().replace(":", "_").replace(" ", "_")
-        save_path, _ = QFileDialog.getSaveFileName(self, "Lưu file ZIP", f"{task_name}.zip", "ZIP Files (*.zip)")
-        if not save_path: return
-
-        self.fr_download_button.setDisabled(True)
-        self.fr_download_button.setText("Đang tải...")
-
-        def on_finish(response):
-            if response.status_code == 200:
-                try:
-                    with open(save_path, 'wb') as f:
-                        f.write(response.content)
-                    QMessageBox.information(self, "Thành công", f"Đã tải và lưu file ZIP thành công tại:\n{save_path}")
-                except Exception as e:
-                    QMessageBox.critical(self, "Lỗi", f"Không thể ghi file vào đĩa.\n{e}")
-            elif response.status_code == 404:
-                 QMessageBox.information(self, "Thông báo", "Không có file nào được nộp cho yêu cầu này.")
-            else:
-                handle_api_error(self, response, "Không thể tải file.")
-            self.fr_download_button.setDisabled(False)
-            self.fr_download_button.setText("Tải tất cả file đã nộp")
-
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server để tải file.\nLỗi: {err_msg}")
-            self.fr_download_button.setDisabled(False)
-            self.fr_download_button.setText("Tải tất cả file đã nộp")
-
-        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/file-tasks/{task_id}/download-all")
-
     def create_settings_tab(self):
         layout = QVBoxLayout(self.settings_tab)
         back_button = QPushButton("⬅️ Quay lại trang chủ")
@@ -877,6 +523,376 @@ class AdminWindow(QMainWindow):
         layout.addWidget(danger_zone_card)
         layout.addStretch()
 
+    def add_new_school_year(self):
+        name = self.sy_name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập tên năm học.")
+            return
+        payload = {"name": name, "start_date": self.sy_start_date_input.date().toString("yyyy-MM-dd"), "end_date": self.sy_end_date_input.date().toString("yyyy-MM-dd")}
+        
+        self.add_sy_button.setDisabled(True)
+        self.add_sy_button.setText("Đang xử lý...")
+
+        def on_success(data, headers):
+            QMessageBox.information(self, "Thành công", f"Đã thêm năm học '{name}' thành công.")
+            self.sy_name_input.clear()
+            self.load_school_years()
+            self.add_sy_button.setDisabled(False)
+            self.add_sy_button.setText("Thêm Năm học")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể thêm năm học.")
+            self.add_sy_button.setDisabled(False)
+            self.add_sy_button.setText("Thêm Năm học")
+
+        self.api_post("/school_years/", payload, on_success, on_error)
+
+    def load_school_years(self):
+        def on_success(data, headers):
+            selectors = [self.ft_school_year_selector, self.ft_filter_sy_selector, self.dr_school_year_selector]
+            for selector in selectors:
+                selector.clear()
+            self.school_years_list_widget_tab.clear()
+            self.ft_filter_sy_selector.addItem("Tất cả", userData=None)
+            for sy in data:
+                item_text = f"ID {sy['id']}: {sy['name']} ({sy['start_date']} - {sy['end_date']})"
+                list_item = QListWidgetItem(item_text)
+                list_item.setData(Qt.UserRole, sy['id'])
+                self.school_years_list_widget_tab.addItem(list_item)
+                for selector in [self.ft_school_year_selector, self.dr_school_year_selector, self.ft_filter_sy_selector]:
+                    selector.addItem(sy['name'], userData=sy['id'])
+        
+        def on_error(status, err):
+            QMessageBox.critical(self, "Lỗi tải năm học", err)
+
+        self.api_get("/school_years/", on_success, on_error)
+
+    def load_schools(self):
+        def on_success(data, headers):
+            self.schools_list_widget.clear()
+            for school in data:
+                list_item = QListWidgetItem()
+                custom_widget = SchoolListItemWidget(school['id'], school['name'], school['api_key'], parent=self.schools_list_widget)
+                list_item.setSizeHint(custom_widget.sizeHint())
+                self.schools_list_widget.addItem(list_item)
+                self.schools_list_widget.setItemWidget(list_item, custom_widget)
+        
+        def on_error(status, err):
+            QMessageBox.critical(self, "Lỗi tải trường học", err)
+
+        self.api_get("/schools/", on_success, on_error)
+
+    def add_new_school(self):
+        school_name = self.school_name_input.text().strip()
+        if not school_name:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập tên trường.")
+            return
+        
+        self.add_school_button.setDisabled(True)
+        self.add_school_button.setText("Đang thêm...")
+
+        def on_success(data, headers):
+            QMessageBox.information(self, "Thành công", f"Đã thêm trường '{school_name}' thành công.")
+            self.school_name_input.clear()
+            self.load_schools()
+            self.add_school_button.setDisabled(False)
+            self.add_school_button.setText("Thêm Trường")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể thêm trường.")
+            self.add_school_button.setDisabled(False)
+            self.add_school_button.setText("Thêm Trường")
+
+        self.api_post("/schools/", {"name": school_name}, on_success, on_error)
+
+    def load_file_tasks(self):
+        school_year_id = self.ft_filter_sy_selector.currentData()
+        params = {}
+        if school_year_id:
+            params['school_year_id'] = school_year_id
+
+        def on_success(data, headers):
+            self.file_tasks_list_widget.clear()
+            self.fr_task_selector.clear()
+            for task in data:
+                deadline_local = QDateTime.fromString(task['deadline'], "yyyy-MM-dd'T'HH:mm:ss")
+                deadline_str = deadline_local.toString("HH:mm dd/MM/yyyy")
+                list_item = QListWidgetItem()
+                custom_widget = ListItemWidget(task['id'], task['title'], deadline_str)
+                list_item.setSizeHint(custom_widget.sizeHint())
+                self.file_tasks_list_widget.addItem(list_item)
+                self.file_tasks_list_widget.setItemWidget(list_item, custom_widget)
+                self.fr_task_selector.addItem(f"ID {task['id']}: {task['title']}", userData=task['id'])
+
+        def on_error(status, err):
+            QMessageBox.critical(self, "Lỗi tải công việc", err)
+
+        self.api_get("/file-tasks/", on_success, on_error, params=params)
+
+    def add_new_file_task(self):
+        school_year_id = self.ft_school_year_selector.currentData()
+        title = self.ft_title_input.text().strip()
+        content = self.ft_content_input.toPlainText().strip()
+        if not title or not content or not school_year_id:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập đầy đủ thông tin.")
+            return
+
+        self.add_ft_button.setDisabled(True)
+        self.add_ft_button.setText("Đang phát hành...")
+        deadline_local = self.ft_deadline_input.dateTime()
+        payload = {"title": title, "content": content, "deadline": deadline_local.toString("yyyy-MM-dd'T'HH:mm:ss"), "school_year_id": school_year_id}
+        
+        def on_success(data, headers):
+            QMessageBox.information(self, "Thành công", "Đã ban hành yêu cầu mới.")
+            self.ft_title_input.clear()
+            self.ft_content_input.clear()
+            self.load_file_tasks()
+            self.add_ft_button.setDisabled(False)
+            self.add_ft_button.setText("Phát hành")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể tạo yêu cầu.")
+            self.add_ft_button.setDisabled(False)
+            self.add_ft_button.setText("Phát hành")
+
+        self.api_post("/file-tasks/", payload, on_success, on_error)
+        
+    def load_data_reports(self):
+        def on_success(data, headers):
+            self.data_reports_list_widget.clear()
+            self.dr_report_selector.clear()
+            for report in data:
+                deadline_local = QDateTime.fromString(report['deadline'], "yyyy-MM-dd'T'HH:mm:ss")
+                deadline_str = deadline_local.toString("HH:mm dd/MM/yyyy")
+                list_item = QListWidgetItem()
+                custom_widget = ListItemWidget(report['id'], report['title'], deadline_str)
+                list_item.setSizeHint(custom_widget.sizeHint())
+                self.data_reports_list_widget.addItem(list_item)
+                self.data_reports_list_widget.setItemWidget(list_item, custom_widget)
+                self.dr_report_selector.addItem(f"ID {report['id']}: {report['title']}", userData=report['id'])
+        
+        def on_error(status, err):
+            QMessageBox.critical(self, "Lỗi tải báo cáo", err)
+
+        self.api_get("/data-reports/", on_success, on_error)
+
+    def add_new_data_report(self):
+        school_year_id = self.dr_school_year_selector.currentData()
+        title = self.dr_title_input.text().strip()
+        template_url = self.dr_template_url_input.text().strip()
+        if not all([title, school_year_id, template_url]):
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập đầy đủ Tiêu đề, URL và chọn Năm học.")
+            return
+
+        self.add_dr_button.setDisabled(True)
+        self.add_dr_button.setText("Đang ban hành...")
+        deadline_local = self.dr_deadline_input.dateTime()
+        payload = {"title": title, "deadline": deadline_local.toString("yyyy-MM-dd'T'HH:mm:ss"), "school_year_id": school_year_id, "template_url": template_url}
+        
+        def on_success(data, headers):
+            QMessageBox.information(self, "Thành công", "Đã ban hành báo cáo nhập liệu mới.")
+            self.dr_title_input.clear()
+            self.dr_template_url_input.clear()
+            self.load_data_reports()
+            self.add_dr_button.setDisabled(False)
+            self.add_dr_button.setText("Ban hành Báo cáo")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể tạo báo cáo.")
+            self.add_dr_button.setDisabled(False)
+            self.add_dr_button.setText("Ban hành Báo cáo")
+
+        self.api_post("/data-reports/", payload, on_success, on_error)
+        
+    def load_file_task_report(self):
+        task_id = self.fr_task_selector.currentData()
+        if task_id is None:
+            self.fr_table.setRowCount(0)
+            self.fr_title_label.setText("Vui lòng chọn một yêu cầu")
+            return
+        
+        self.fr_refresh_button.setDisabled(True)
+        self.fr_refresh_button.setText("Đang tải...")
+
+        def on_success(data, headers):
+            task_title = data.get('task', {}).get('title', '')
+            self.fr_title_label.setText(f"Báo cáo chi tiết cho: {task_title}")
+            submitted = data.get('submitted_schools', [])
+            not_submitted = data.get('not_submitted_schools', [])
+            
+            self.fr_table.setRowCount(0)
+            self.fr_table.setRowCount(len(submitted) + len(not_submitted))
+            
+            stt = 0
+            for school_info in submitted:
+                stt_item = QTableWidgetItem(str(stt + 1))
+                name_item = QTableWidgetItem(school_info['name'])
+                status_item = QTableWidgetItem("Đã nộp")
+                status_item.setForeground(QColor("green"))
+                
+                submitted_at_dt = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
+                submitted_at_dt.setTimeZone(QTimeZone(b"UTC"))
+                submitted_at_local = submitted_at_dt.toLocalTime()
+                time_item = QTableWidgetItem(submitted_at_local.toString("HH:mm dd/MM/yyyy"))
+
+                self.fr_table.setItem(stt, 0, stt_item)
+                self.fr_table.setItem(stt, 1, name_item)
+                self.fr_table.setItem(stt, 2, status_item)
+                self.fr_table.setItem(stt, 3, time_item)
+                stt += 1
+
+            for school in not_submitted:
+                stt_item = QTableWidgetItem(str(stt + 1))
+                name_item = QTableWidgetItem(school['name'])
+                status_item = QTableWidgetItem("Chưa nộp")
+                status_item.setForeground(QColor("red"))
+                time_item = QTableWidgetItem("")
+
+                self.fr_table.setItem(stt, 0, stt_item)
+                self.fr_table.setItem(stt, 1, name_item)
+                self.fr_table.setItem(stt, 2, status_item)
+                self.fr_table.setItem(stt, 3, time_item)
+                stt += 1
+            
+            self.fr_table.resizeColumnsToContents()
+            self.fr_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            self.fr_refresh_button.setDisabled(False)
+            self.fr_refresh_button.setText("Làm mới")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể tải dữ liệu báo cáo.")
+            self.fr_refresh_button.setDisabled(False)
+            self.fr_refresh_button.setText("Làm mới")
+
+        self.api_get(f"/file-tasks/{task_id}/status", on_success, on_error)
+
+    def load_data_entry_report(self):
+        report_id = self.dr_report_selector.currentData()
+        if report_id is None:
+            self.dr_table.setRowCount(0)
+            self.dr_title_label.setText("Vui lòng chọn một báo cáo")
+            return
+        
+        self.dr_refresh_button.setDisabled(True)
+        self.dr_refresh_button.setText("Đang tải...")
+
+        def on_success(data, headers):
+            report_title = data.get('report', {}).get('title', '')
+            self.dr_title_label.setText(f"Báo cáo chi tiết cho: {report_title}")
+            submitted = data.get('submitted_schools', [])
+            not_submitted = data.get('not_submitted_schools', [])
+
+            self.dr_table.setRowCount(0)
+            self.dr_table.setRowCount(len(submitted) + len(not_submitted))
+
+            stt = 0
+            for school_info in submitted:
+                stt_item = QTableWidgetItem(str(stt + 1))
+                name_item = QTableWidgetItem(school_info['name'])
+                status_item = QTableWidgetItem("Đã hoàn thành")
+                status_item.setForeground(QColor("green"))
+
+                submitted_at_dt = QDateTime.fromString(school_info['submitted_at'], "yyyy-MM-dd'T'HH:mm:ss")
+                submitted_at_dt.setTimeZone(QTimeZone(b"UTC"))
+                submitted_at_local = submitted_at_dt.toLocalTime()
+                time_item = QTableWidgetItem(submitted_at_local.toString("HH:mm dd/MM/yyyy"))
+
+                self.dr_table.setItem(stt, 0, stt_item)
+                self.dr_table.setItem(stt, 1, name_item)
+                self.dr_table.setItem(stt, 2, status_item)
+                self.dr_table.setItem(stt, 3, time_item)
+                stt += 1
+
+            for school in not_submitted:
+                stt_item = QTableWidgetItem(str(stt + 1))
+                name_item = QTableWidgetItem(school['name'])
+                status_item = QTableWidgetItem("Chưa thực hiện")
+                status_item.setForeground(QColor("red"))
+                time_item = QTableWidgetItem("")
+
+                self.dr_table.setItem(stt, 0, stt_item)
+                self.dr_table.setItem(stt, 1, name_item)
+                self.dr_table.setItem(stt, 2, status_item)
+                self.dr_table.setItem(stt, 3, time_item)
+                stt += 1
+
+            self.dr_table.resizeColumnsToContents()
+            self.dr_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            self.dr_refresh_button.setDisabled(False)
+            self.dr_refresh_button.setText("Làm mới")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể tải dữ liệu báo cáo.")
+            self.dr_refresh_button.setDisabled(False)
+            self.dr_refresh_button.setText("Làm mới")
+            
+        self.api_get(f"/data-reports/{report_id}/status", on_success, on_error)
+        
+    def send_reminder_handler(self, task_type):
+        task_id = None
+        button_to_disable = None
+        if task_type == "file":
+            task_id = self.fr_task_selector.currentData()
+            button_to_disable = self.fr_remind_button
+        elif task_type == "data":
+            task_id = self.dr_report_selector.currentData()
+            button_to_disable = self.dr_remind_button
+
+        if task_id is None:
+            QMessageBox.warning(self, "Chưa chọn", "Vui lòng chọn một yêu cầu để gửi nhắc nhở.")
+            return
+
+        reply = QMessageBox.question(self, 'Xác nhận', "Bạn có chắc chắn muốn gửi nhắc nhở đến tất cả các trường chưa nộp báo cáo này không?", QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.No: return
+
+        button_to_disable.setDisabled(True)
+        button_to_disable.setText("Đang gửi...")
+
+        def on_success(data, headers):
+            QMessageBox.information(self, "Thành công", data.get("message", "Đã gửi nhắc nhở thành công."))
+            button_to_disable.setDisabled(False)
+            button_to_disable.setText("Gửi nhắc nhở")
+
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể gửi nhắc nhở.")
+            button_to_disable.setDisabled(False)
+            button_to_disable.setText("Gửi nhắc nhở")
+
+        self.api_post(f"/admin/remind/{task_type}/{task_id}", {}, on_success, on_error)
+
+    def download_all_files(self):
+        task_id = self.fr_task_selector.currentData()
+        if task_id is None:
+            QMessageBox.warning(self, "Chưa chọn", "Vui lòng chọn một yêu cầu để tải file.")
+            return
+        
+        task_name = self.fr_task_selector.currentText().replace(":", "_").replace(" ", "_")
+        save_path, _ = QFileDialog.getSaveFileName(self, "Lưu file ZIP", f"{task_name}.zip", "ZIP Files (*.zip)")
+        if not save_path: return
+
+        self.fr_download_button.setDisabled(True)
+        self.fr_download_button.setText("Đang tải...")
+
+        def on_success(data_bytes):
+            try:
+                with open(save_path, 'wb') as f:
+                    f.write(data_bytes)
+                QMessageBox.information(self, "Thành công", f"Đã tải và lưu file ZIP thành công tại:\n{save_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Lỗi", f"Không thể ghi file vào đĩa.\n{e}")
+            self.fr_download_button.setDisabled(False)
+            self.fr_download_button.setText("Tải tất cả file đã nộp")
+
+        def on_error(status, err):
+            if status == 404:
+                 QMessageBox.information(self, "Thông báo", "Không có file nào được nộp cho yêu cầu này.")
+            else:
+                handle_api_error(self, status, err, "Không thể tải file.")
+            self.fr_download_button.setDisabled(False)
+            self.fr_download_button.setText("Tải tất cả file đã nộp")
+        
+        self.api_download(f"/file-tasks/{task_id}/download-all", on_success, on_error)
+        
     def handle_reset_database(self):
         password, ok = QInputDialog.getText(self, "Yêu cầu Mật khẩu", "Vui lòng nhập mật khẩu quản trị để tiếp tục:", QLineEdit.Password)
         if not ok or not password: return
@@ -890,21 +906,19 @@ class AdminWindow(QMainWindow):
         self.reset_db_button.setText("Đang xóa...")
         payload = {"password": password}
         
-        def on_finish(response):
-            if response.status_code == 200:
-                QMessageBox.information(self, "Thành công", "Đã xóa toàn bộ dữ liệu thành công.")
-                self.load_all_initial_data()
-            else:
-                handle_api_error(self, response, "Không thể xóa dữ liệu.")
+        def on_success(data, headers):
+            QMessageBox.information(self, "Thành công", "Đã xóa toàn bộ dữ liệu thành công.")
+            self.load_all_initial_data()
             self.reset_db_button.setDisabled(False)
             self.reset_db_button.setText("Xóa Toàn Bộ Dữ Liệu")
 
-        def on_error(err_msg):
-            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
+        def on_error(status, err):
+            handle_api_error(self, status, err, "Không thể xóa dữ liệu.")
             self.reset_db_button.setDisabled(False)
             self.reset_db_button.setText("Xóa Toàn Bộ Dữ Liệu")
 
-        self.run_in_thread(requests.post, on_finish, on_error, f"{API_URL}/admin/reset-database", json=payload)
+        self.api_post("/admin/reset-database", payload, on_success, on_error)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

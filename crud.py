@@ -26,27 +26,47 @@ SERVER_SCOPES = [
 
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
-def _get_google_service(service_name: str, version: str):
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        raise FileNotFoundError(f"Không tìm thấy file khóa dịch vụ trên server: '{SERVICE_ACCOUNT_FILE}'")
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SERVER_SCOPES)
-    service = build(service_name, version, credentials=creds)
-    return service, creds
+# def _get_google_service(service_name: str, version: str):
+    # print(f"DEBUG [crud]: Attempting to get Google service '{service_name}'...") # DEBUG
+    # if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        # print(f"DEBUG [crud]: ERROR - Service account file not found at '{SERVICE_ACCOUNT_FILE}'") # DEBUG
+        # raise FileNotFoundError(f"Không tìm thấy file khóa dịch vụ trên server: '{SERVICE_ACCOUNT_FILE}'")
+    
+    # try:
+        # creds = service_account.Credentials.from_service_account_file(
+            # SERVICE_ACCOUNT_FILE, scopes=SERVER_SCOPES)
+        # service = build(service_name, version, credentials=creds)
+        # print(f"DEBUG [crud]: Successfully built Google service '{service_name}'.") # DEBUG
+        # return service, creds
+    # except Exception as e:
+        # print(f"DEBUG [crud]: ERROR - Failed to build Google service: {e}") # DEBUG
+        # raise
 
 def _get_or_create_folder(service, name: str, parent_id: str):
     try:
         folder_name_ascii = unidecode(name)
         query = f"name='{folder_name_ascii}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        
+        print(f"DEBUG [crud]: Searching for folder with query: {query}") # DEBUG
         response = service.files().list(q=query, spaces='drive', fields='files(id)').execute()
         folders = response.get('files', [])
+        
         if folders:
-            return folders[0].get('id')
+            folder_id = folders[0].get('id')
+            print(f"DEBUG [crud]: Found existing folder '{name}' with ID: {folder_id}") # DEBUG
+            return folder_id
+        
+        print(f"DEBUG [crud]: Folder '{name}' not found. Creating new one...") # DEBUG
         folder_metadata = {'name': folder_name_ascii, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
         folder = service.files().create(body=folder_metadata, fields='id').execute()
-        return folder.get('id')
+        folder_id = folder.get('id')
+        print(f"DEBUG [crud]: Successfully created folder '{name}' with ID: {folder_id}") # DEBUG
+        return folder_id
     except HttpError as e:
-        print(f"Lỗi khi lấy hoặc tạo thư mục '{name}': {e}")
+        print(f"DEBUG [crud]: ERROR - HttpError while getting/creating folder '{name}': {e}") # DEBUG
+        return None
+    except Exception as e:
+        print(f"DEBUG [crud]: ERROR - A general error occurred in _get_or_create_folder: {e}") # DEBUG
         return None
 
 def extract_drive_file_id_from_url(url: str) -> Optional[str]:
@@ -78,15 +98,27 @@ def get_school_years(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.SchoolYear).order_by(models.SchoolYear.start_date.desc()).offset(skip).limit(limit).all()
 
 def create_school_year(db: Session, school_year: schemas.SchoolYearCreate):
-    drive_service, _ = _get_google_service('drive', 'v3')
-    folder_id = _get_or_create_folder(drive_service, school_year.name, ROOT_DRIVE_FOLDER_ID)
-    if not folder_id:
+    print("DEBUG [crud]: Starting create_school_year process...") # DEBUG
+    try:
+        drive_service, _ = _get_google_service('drive', 'v3')
+        print(f"DEBUG [crud]: Attempting to create Drive folder for school year '{school_year.name}'...") # DEBUG
+        folder_id = _get_or_create_folder(drive_service, school_year.name, ROOT_DRIVE_FOLDER_ID)
+        
+        if not folder_id:
+            print("DEBUG [crud]: ERROR - Failed to get or create Drive folder. Aborting.") # DEBUG
+            return None
+        
+        print(f"DEBUG [crud]: Drive folder created/found. Committing to database...") # DEBUG
+        db_school_year = models.SchoolYear(**school_year.dict(), drive_folder_id=folder_id)
+        db.add(db_school_year)
+        db.commit()
+        db.refresh(db_school_year)
+        print("DEBUG [crud]: Successfully created school year in database.") # DEBUG
+        return db_school_year
+    except Exception as e:
+        print(f"DEBUG [crud]: ERROR - An exception occurred in create_school_year: {e}") # DEBUG
+        db.rollback()
         return None
-    db_school_year = models.SchoolYear(**school_year.dict(), drive_folder_id=folder_id)
-    db.add(db_school_year)
-    db.commit()
-    db.refresh(db_school_year)
-    return db_school_year
 
 def get_schools(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.School).order_by(models.School.name).offset(skip).limit(limit).all()
