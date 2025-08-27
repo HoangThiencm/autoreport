@@ -25,7 +25,12 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 
 API_URL = "https://auto-report-backend.onrender.com" 
 CONFIG_FILE = "client_config.json"
-GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email']
+# SỬA LỖI CUỐI CÙNG: Thêm 'openid' vào scope để khớp với yêu cầu của thư viện Google
+GDRIVE_SCOPES = [
+    'https://www.googleapis.com/auth/drive', 
+    'https://www.googleapis.com/auth/userinfo.email',
+    'openid'
+]
 DRIVE_TOKEN_FILE = 'token.json'
 
 def handle_api_error(self, status_code, response_text, context_message):
@@ -53,9 +58,12 @@ def get_drive_service() -> Tuple[object, str]:
         with open(DRIVE_TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
     
+    # Lấy email người dùng sau khi xác thực
     service = build('drive', 'v3', credentials=creds)
-    user_info = service.about().get(fields='user').execute()
-    user_email = user_info.get('user', {}).get('emailAddress')
+    user_info_service = build('oauth2', 'v2', credentials=creds)
+    user_info = user_info_service.userinfo().get().execute()
+    user_email = user_info.get('email')
+    
     return service, user_email
 
 # --- WORKER MỚI CHO VIỆC TẢI FILE LÊN ---
@@ -396,7 +404,6 @@ class ClientWindow(QMainWindow):
             on_generic_error(0, err_msg)
 
         def start_submission_process():
-            # First, authenticate with Google and get service/email
             try:
                 if not self.drive_service or not self.user_email:
                     self.ft_status_label.setText("Đang xác thực với Google...")
@@ -425,7 +432,7 @@ class ClientWindow(QMainWindow):
             self.upload_worker.moveToThread(self.upload_thread)
             self.upload_thread.started.connect(self.upload_worker.run)
             self.upload_worker.finished.connect(on_upload_finished)
-            self.upload_worker.error.connect(on_upload_error) # FIX: Connect to the correct error handler
+            self.upload_worker.error.connect(on_upload_error)
             self.upload_worker.progress.connect(self.progress_bar.setValue)
             self.upload_worker.finished.connect(self.upload_thread.quit)
             self.upload_worker.finished.connect(self.upload_worker.deleteLater)
@@ -584,4 +591,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = ClientWindow()
     window.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec
