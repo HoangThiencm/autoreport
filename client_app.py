@@ -29,18 +29,14 @@ API_URL = "https://auto-report-backend.onrender.com"
 # --- SỬA LỖI ĐÓNG GÓI EXE: Lưu file vào thư mục người dùng ---
 def get_app_data_path(filename):
     """Lấy đường dẫn đầy đủ tới file trong thư mục cấu hình của ứng dụng."""
-    # Tạo một thư mục ẩn tên là .auto_report_client trong thư mục home của người dùng
-    # Ví dụ: C:/Users/HoangThien/.auto_report_client/
     app_data_dir = os.path.join(os.path.expanduser('~'), '.auto_report_client')
     os.makedirs(app_data_dir, exist_ok=True)
     return os.path.join(app_data_dir, filename)
 
-# Tất cả các file cấu hình sẽ được đọc/ghi vào thư mục cố định này
 CONFIG_FILE = get_app_data_path("client_config.json")
 DRIVE_TOKEN_FILE = get_app_data_path('token.json')
 CREDENTIALS_FILE = get_app_data_path('credentials_oauth.json')
 
-# Scope đầy đủ và chính xác nhất để tránh lỗi
 GDRIVE_SCOPES = [
     'https://www.googleapis.com/auth/drive', 
     'https://www.googleapis.com/auth/userinfo.email',
@@ -58,9 +54,7 @@ def handle_api_error(self, status_code, response_text, context_message):
 
 # --- PHẦN LOGIC GOOGLE DRIVE ---
 def get_drive_service() -> Tuple[object, str]:
-    # Tự động sao chép file credentials nếu nó chưa tồn tại trong thư mục cấu hình
     if not os.path.exists(CREDENTIALS_FILE):
-        # Tìm file credentials_oauth.json nằm bên cạnh file .exe
         source_path = 'credentials_oauth.json' 
         if os.path.exists(source_path):
             shutil.copy(source_path, CREDENTIALS_FILE)
@@ -75,8 +69,8 @@ def get_drive_service() -> Tuple[object, str]:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, GDRIVE_SCOPES)
-            # Lệnh này sẽ tự động mở trình duyệt
-            creds = flow.run_local_server(port=0) 
+            # SỬA LỖI: Chuyển sang phương thức run_console() để tránh lỗi localhost
+            creds = flow.run_console() 
         with open(DRIVE_TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
     
