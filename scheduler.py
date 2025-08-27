@@ -28,9 +28,6 @@ def check_deadlines_and_send_email():
             
             subject = f"[BÁO CÁO TỰ ĐỘNG] Yêu cầu nộp file '{task.title}' đã quá hạn"
             
-            # Dòng log debug để xác nhận code mới đang chạy
-            print("DEBUG: Bắt đầu tạo nội dung email với LOGIC MỚI NHẤT.")
-            
             body = f"""
             <html>
             <body style="font-family: Arial, sans-serif; line-height: 1.6;">
@@ -73,9 +70,6 @@ def check_deadlines_and_send_email():
             
             subject = f"[BÁO CÁO TỰ ĐỘNG] Yêu cầu nhập liệu '{report.title}' đã quá hạn"
             
-            # Dòng log debug để xác nhận code mới đang chạy
-            print("DEBUG: Bắt đầu tạo nội dung email BÁO CÁO NHẬP LIỆU với LOGIC MỚI NHẤT.")
-
             body = f"""
             <html>
             <body style="font-family: Arial, sans-serif; line-height: 1.6;">
