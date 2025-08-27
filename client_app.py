@@ -68,7 +68,7 @@ class ListItemWidget(QWidget):
         info_layout.addWidget(deadline_label)
         
         status_label = QLabel("Đã hoàn thành" if is_submitted else "Chưa thực hiện")
-        status_label.setStyleSheet(f"color: {'green' if is_submitted else 'red'}; font-weight: bold;")
+        status_label.setStyleSheet(f"color: {'#27ae60' if is_submitted else '#e74c3c'}; font-weight: bold;")
         
         layout.addLayout(info_layout, 1)
         layout.addWidget(status_label, alignment=Qt.AlignCenter)
@@ -77,21 +77,74 @@ class ListItemWidget(QWidget):
 class ClientWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Hệ thống Báo cáo")
+        self.setWindowTitle("Hệ thống Báo cáo - phiên bản dành cho trường học ở phường Hố Nai, tỉnh Đồng Nai")
         if os.path.exists('baocao.ico'):
             self.setWindowIcon(QIcon('baocao.ico'))
         self.setGeometry(200, 200, 1100, 800)
         self.api_key = self.load_api_key()
+        
+        # --- PHẦN STYLESHEET ĐÃ ĐƯỢC CẬP NHẬT ---
         self.setStyleSheet("""
-            QMainWindow { background-color: #ecf0f1; }
-            QFrame#card { background-color: white; border-radius: 10px; border: 1px solid #e0e0e0; padding: 20px; margin: 10px; }
-            QLineEdit, QDateTimeEdit, QComboBox { border: 1px solid #bdc3c7; border-radius: 5px; padding: 10px; font-size: 16px; }
-            QPushButton { background-color: #3498db; color: white; border: none; padding: 12px 18px; border-radius: 5px; font-weight: bold; font-size: 16px; }
+            QMainWindow { background-color: #f4f6f9; }
+            QFrame#card { 
+                background-color: white; 
+                border-radius: 10px; 
+                border: 1px solid #dfe4ea; 
+                padding: 20px; 
+                margin: 10px; 
+            }
+            QLineEdit, QDateTimeEdit, QComboBox { 
+                border: 1px solid #ced4da; 
+                border-radius: 5px; 
+                padding: 10px; 
+                font-size: 16px; 
+            }
+            QPushButton { 
+                background-color: #3498db; 
+                color: white; 
+                border: none; 
+                padding: 12px 18px; 
+                border-radius: 5px; 
+                font-weight: bold; 
+                font-size: 16px; 
+            }
             QPushButton:hover { background-color: #2980b9; }
             QLabel { font-weight: bold; color: #34495e; font-size: 16px; }
-            QTableWidget, QListWidget { border: 1px solid #ecf0f1; border-radius: 5px; background-color: #ffffff; font-size: 16px; }
-            QHeaderView::section { background-color: #34495e; color: white; padding: 8px; font-size: 15px; }
-            QTabBar::tab { font-size: 16px; padding: 10px; }
+            QTableWidget, QListWidget { 
+                border: 1px solid #dfe4ea; 
+                border-radius: 5px; 
+                background-color: #ffffff; 
+                font-size: 16px; 
+            }
+            QHeaderView::section { 
+                background-color: #34495e; 
+                color: white; 
+                padding: 8px; 
+                font-size: 15px; 
+                border: none;
+            }
+            
+            /* === PHẦN ĐIỀU CHỈNH GIAO DIỆN TAB === */
+            QTabWidget::pane { 
+                border: none;
+            }
+            QTabBar::tab {
+                background-color: #e4e7eb;
+                color: #566573;
+                padding: 12px 25px;
+                font-size: 16px;
+                font-weight: bold;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:hover {
+                background-color: #d5dbdb;
+            }
+            QTabBar::tab:selected {
+                background-color: #3498db;
+                color: white;
+            }
         """)
         
         central_widget = QWidget()
@@ -254,7 +307,7 @@ class ClientWindow(QMainWindow):
                     status_text = "Đã thực hiện" if is_submitted else "Chưa thực hiện"
                     status_item = QTableWidgetItem(status_text)
                     status_item.setTextAlignment(Qt.AlignCenter)
-                    status_item.setForeground(QColor("green") if is_submitted else QColor("red"))
+                    status_item.setForeground(QColor("#27ae60") if is_submitted else QColor("#e74c3c"))
                     
                     title_item = QTableWidgetItem(task['title'])
                     title_item.setData(Qt.UserRole, task['id'])
