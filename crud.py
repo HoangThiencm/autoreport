@@ -274,3 +274,32 @@ def get_data_report_status(db: Session, report_id: int):
 
 def get_data_entry_for_school(db: Session, report_id: int, school_id: int):
     return db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
+
+def reset_database(db: Session):
+    """
+    Xóa tất cả dữ liệu từ các bảng theo đúng thứ tự để tránh lỗi khóa ngoại.
+    Không xóa cấu trúc bảng, chỉ xóa dữ liệu.
+    """
+    try:
+        # 1. Xóa các bảng con trước
+        db.query(models.FileSubmission).delete()
+        db.query(models.DataEntry).delete()
+        db.commit()
+
+        # 2. Xóa các bảng cha của chúng
+        db.query(models.FileTask).delete()
+        db.query(models.DataReport).delete()
+        db.commit()
+
+        # 3. Xóa các trường học (School)
+        db.query(models.School).delete()
+        db.commit()
+
+        # 4. Cuối cùng, xóa năm học (SchoolYear)
+        db.query(models.SchoolYear).delete()
+        db.commit()
+        
+        return True, "Đã xóa toàn bộ dữ liệu thành công."
+    except Exception as e:
+        db.rollback()
+        return False, f"Lỗi khi xóa dữ liệu: {e}"

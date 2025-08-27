@@ -15,6 +15,26 @@ pip freeze > requirements.txt
 
 https://drive.google.com/drive/u/2/folders/13di1au2iwdr5cbz57b4q_SEK-RF5ZiiC
 
+postgresql://auto_report_db_user:Tl5h81DhKEPTmiX05SMb1G7NrMEszHEE@dpg-d2nabru3jp1c73cdukqg-a/auto_report_db
+
+https://auto-report-backend.onrender.com
+
+# Mật khẩu đơn giản để bảo vệ chức năng reset
+RESET_PASSWORD = "admin_reset_123"
+Lưu ý: dua len lai github
+# 1. Thêm tất cả các file đã thay đổi
+git add .
+
+# 2. Tạo một commit với mô tả rõ ràng
+git commit -m "Add database reset functionality"
+
+# 3. Đẩy code lên GitHub
+git push origin main
+
+
+git add requirements.txt  //file cần chuyển lên
+git commit -m "Fix server requirements for deployment"
+git push origin main
 
 git remote add origin https://github.com/HoangThiencm/autoreport.git
 git branch -M main

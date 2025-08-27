@@ -199,3 +199,21 @@ def mark_report_as_complete(
     if not entry:
         raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo hoặc đã được xác nhận trước đó.")
     return {"message": "Đã đánh dấu báo cáo là hoàn thành."}
+
+# --- ENDPOINT MỚI ĐỂ RESET DATABASE ---
+class ResetPayload(BaseModel):
+    password: str
+
+# Mật khẩu đơn giản để bảo vệ chức năng reset
+RESET_PASSWORD = "admin_reset_123" 
+
+@app.post("/admin/reset-database", status_code=status.HTTP_200_OK)
+def handle_reset_database(payload: ResetPayload, db: Session = Depends(get_db)):
+    if payload.password != RESET_PASSWORD:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Mật khẩu không chính xác.")
+    
+    success, message = crud.reset_database(db)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+        
+    return {"message": message}

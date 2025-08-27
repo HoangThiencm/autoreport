@@ -1,4 +1,3 @@
-# admin_app.py
 import sys
 import os
 import webbrowser
@@ -8,47 +7,40 @@ from PySide6.QtWidgets import (
     QPushButton, QListWidget, QMessageBox, QLineEdit, QLabel,
     QTabWidget, QTextEdit, QDateTimeEdit, QComboBox, QFrame, QGridLayout,
     QListWidgetItem, QDateEdit, QStackedWidget, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QFileDialog
+    QTableWidgetItem, QHeaderView, QFileDialog, QInputDialog
 )
 from PySide6.QtCore import QDateTime, Qt, QDate, QUrl
 from PySide6.QtGui import QIcon, QColor, QFont, QDesktopServices, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 import clipboard
 
-# XÓA BỎ DÒNG IMPORT NHAPLIEU.PY
-# from nhaplieu import SheetDesignerWindow 
+API_URL = "https://auto-report-backend.onrender.com"
 
-API_URL = "http://127.0.0.1:8000"
-
-# --- (Các class SchoolListItemWidget, ListItemWidget, DashboardCard không đổi) ---
+# --- WIDGET TÙY CHỈNH CHO MỘT MỤC TRONG DANH SÁCH TRƯỜNG ---
 class SchoolListItemWidget(QWidget):
     def __init__(self, school_id, name, api_key, parent=None):
         super().__init__(parent)
         self.school_id = school_id
         self.api_key = api_key
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(10, 5, 10, 5)
         
         self.name_label = QLabel(f"<b>{name}</b>")
-        self.name_label.setFont(QFont("Segoe UI", 12))
         self.key_label = QLineEdit(api_key)
         self.key_label.setReadOnly(True)
-        self.key_label.setStyleSheet("background-color: #ecf0f1; border: 1px solid #bdc3c7; padding: 5px; border-radius: 5px;")
+        self.key_label.setStyleSheet("background-color: #f1f1f1; border: 1px solid #ccc; padding: 5px; border-radius: 4px;")
         
-        self.copy_button = QPushButton("Sao chép API Key")
-        self.copy_button.setFont(QFont("Segoe UI", 12))
-        self.copy_button.setStyleSheet("QPushButton { background-color: #3498db; color: white; border: none; padding: 8px 12px; border-radius: 5px; } QPushButton:hover { background-color: #2980b9; }")
+        self.copy_button = QPushButton("Sao chép")
+        self.copy_button.setStyleSheet("padding: 5px 10px; font-size: 14px;")
         self.copy_button.clicked.connect(self.copy_api_key)
 
         self.delete_button = QPushButton("Xóa")
-        self.delete_button.setFont(QFont("Segoe UI", 12))
-        self.delete_button.setStyleSheet("QPushButton { background-color: #e74c3c; color: white; border: none; padding: 8px 12px; border-radius: 5px; } QPushButton:hover { background-color: #c0392b; }")
+        self.delete_button.setStyleSheet("background-color: #e74c3c; padding: 5px 10px; font-size: 14px;")
         self.delete_button.clicked.connect(self.delete_school)
 
-        layout.addWidget(self.name_label)
-        layout.addStretch()
+        layout.addWidget(self.name_label, 1)
         layout.addWidget(QLabel("API Key:"))
-        layout.addWidget(self.key_label)
+        layout.addWidget(self.key_label, 2)
         layout.addWidget(self.copy_button)
         layout.addWidget(self.delete_button)
         
@@ -71,19 +63,20 @@ class SchoolListItemWidget(QWidget):
             except requests.exceptions.ConnectionError:
                 QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 
+# --- WIDGET TÙY CHỈNH CHO DANH SÁCH YÊU CẦU ---
 class ListItemWidget(QWidget):
     def __init__(self, item_id, title, deadline, parent=None):
         super().__init__(parent)
         self.item_id = item_id
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setContentsMargins(10, 8, 10, 8)
         self.title_label = QLabel(f"<b>ID {item_id}: {title}</b>")
-        self.title_label.setStyleSheet("color: #34495e; font-size: 14px;")
         self.deadline_label = QLabel(f"Hạn chót: {deadline}")
-        self.deadline_label.setStyleSheet("color: #7f8c8d; font-size: 12px;")
+        self.deadline_label.setStyleSheet("color: #666; font-weight: normal;")
         layout.addWidget(self.title_label)
         layout.addWidget(self.deadline_label)
 
+# --- WIDGET TÙY CHỈNH CHO THẺ DASHBOARD ---
 class DashboardCard(QPushButton):
     def __init__(self, icon_svg_data, title, description, parent=None):
         super().__init__(parent)
@@ -91,19 +84,38 @@ class DashboardCard(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setObjectName("DashboardCard")
         self.setStyleSheet("""
-            #DashboardCard { background-color: white; border: 1px solid #e0e0e0; border-radius: 10px; text-align: left; padding: 20px; }
-            #DashboardCard:hover { background-color: #f0f4f8; border: 1px solid #3498db; }
-            #CardTitle { font-size: 18px; font-weight: bold; color: #34495e; margin-top: 10px; }
-            #CardDescription { font-size: 14px; color: #7f8c8d; margin-top: 5px; }
+            #DashboardCard { 
+                background-color: white; 
+                border: 1px solid #e0e0e0; 
+                border-radius: 10px; 
+                text-align: left; 
+                padding: 20px; 
+            }
+            #DashboardCard:hover { 
+                background-color: #f0f4f8; 
+                border: 1px solid #3498db; 
+            }
+            #CardTitle { 
+                font-size: 18px; 
+                font-weight: bold; 
+                color: #2c3e50; 
+                margin-top: 10px; 
+            }
+            #CardDescription { 
+                font-size: 14px; 
+                color: #7f8c8d; 
+                margin-top: 5px; 
+                font-weight: normal;
+            }
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.icon_label = QLabel()
-        self.icon_label.setFixedSize(80, 80)
+        self.icon_label.setFixedSize(60, 60) # Thu nhỏ icon một chút
         self.set_icon(icon_svg_data)
         layout.addWidget(self.icon_label)
-        layout.addSpacing(10)
+        layout.addSpacing(15)
         title_label = QLabel(title)
         title_label.setObjectName("CardTitle")
         title_label.setWordWrap(True)
@@ -129,18 +141,61 @@ class AdminWindow(QMainWindow):
         self.setWindowTitle("Bảng điều khiển cho Quản trị viên")
         if os.path.exists('baocao.ico'):
             self.setWindowIcon(QIcon('baocao.ico'))
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1280, 800) # Mở rộng cửa sổ một chút
+        
+        # Đặt font chữ chung cho toàn bộ ứng dụng
+        font = QFont("Segoe UI", 10)
+        self.setFont(font)
+
         self.setStyleSheet("""
-            QMainWindow { background-color: #ecf0f1; }
-            QFrame#card { background-color: white; border-radius: 10px; border: 1px solid #e0e0e0; padding: 20px; margin: 10px; }
-            QLineEdit, QTextEdit, QDateTimeEdit, QComboBox, QDateEdit { border: 1px solid #bdc3c7; border-radius: 5px; padding: 10px; font-size: 16px; }
-            QPushButton { background-color: #3498db; color: white; border: none; padding: 12px 18px; border-radius: 5px; font-weight: bold; font-size: 16px; }
+            QMainWindow { background-color: #f4f6f9; }
+            QFrame#card { 
+                background-color: white; 
+                border-radius: 8px; 
+                border: 1px solid #dfe4ea; 
+                padding: 20px; 
+                margin: 10px; 
+            }
+            QLineEdit, QTextEdit, QDateTimeEdit, QComboBox, QDateEdit { 
+                border: 1px solid #ced4da; 
+                border-radius: 5px; 
+                padding: 10px; 
+                font-size: 16px; 
+                background-color: #ffffff;
+            }
+            QPushButton { 
+                background-color: #3498db; 
+                color: white; 
+                border: none; 
+                padding: 12px 18px; 
+                border-radius: 5px; 
+                font-weight: bold; 
+                font-size: 16px; 
+            }
             QPushButton:hover { background-color: #2980b9; }
-            QLabel { font-weight: bold; color: #34495e; font-size: 16px; }
-            QLabel#main_title { font-size: 35px; font-weight: bold; color: #e74c3c; margin-bottom: 5px; }
-            QLabel#subtitle { font-size: 30px; font-weight: bold; color: #e74c3c; margin-top: 0; }
-            QListWidget, QTableWidget { border: 1px solid #ecf0f1; border-radius: 5px; background-color: #ffffff; }
-            QHeaderView::section { background-color: #34495e; color: white; padding: 8px; font-size: 14px; }
+            QLabel { color: #34495e; font-size: 16px; }
+            QLabel#main_title { font-size: 28px; font-weight: bold; color: #e74c3c; }
+            QLabel#subtitle { font-size: 20px; font-weight: bold; color: #e74c3c; margin-bottom: 20px; }
+            QListWidget, QTableWidget { 
+                border: 1px solid #dfe4ea; 
+                border-radius: 5px; 
+                background-color: #ffffff; 
+                font-size: 16px;
+            }
+            QHeaderView::section { 
+                background-color: #e9ecef; 
+                color: #495057; 
+                padding: 10px; 
+                font-size: 14px; 
+                font-weight: bold;
+                border: none;
+            }
+            QTabBar::tab { 
+                font-size: 16px; 
+                padding: 12px 20px; 
+                font-weight: bold;
+            }
+            QTabWidget::pane { border: none; }
         """)
         
         self.stacked_widget = QStackedWidget()
@@ -152,6 +207,7 @@ class AdminWindow(QMainWindow):
         self.file_tasks_tab = QWidget()
         self.data_reports_tab = QWidget()
         self.report_tab = QWidget()
+        self.settings_tab = QWidget()
         
         self.create_main_dashboard()
         self.create_school_years_tab()
@@ -159,6 +215,7 @@ class AdminWindow(QMainWindow):
         self.create_file_tasks_tab()
         self.create_data_reports_tab()
         self.create_report_tab()
+        self.create_settings_tab()
 
         self.stacked_widget.addWidget(self.dashboard_tab)
         self.stacked_widget.addWidget(self.school_years_tab)
@@ -166,6 +223,7 @@ class AdminWindow(QMainWindow):
         self.stacked_widget.addWidget(self.file_tasks_tab)
         self.stacked_widget.addWidget(self.data_reports_tab)
         self.stacked_widget.addWidget(self.report_tab)
+        self.stacked_widget.addWidget(self.settings_tab)
 
         self.stacked_widget.setCurrentWidget(self.dashboard_tab)
         
@@ -176,37 +234,39 @@ class AdminWindow(QMainWindow):
 
     def create_main_dashboard(self):
         layout = QVBoxLayout(self.dashboard_tab)
+        layout.setContentsMargins(40, 20, 40, 20)
         layout.setAlignment(Qt.AlignCenter)
         header_frame = QFrame()
         header_layout = QVBoxLayout(header_frame)
-        main_title = QLabel("HỆ THỐNG QUẢN LÝ PHÁT HÀNH VĂN BẢN TRƯỜNG HỌC") 
+        main_title = QLabel("HỆ THỐNG QUẢN LÝ BÁO CÁO TRƯỜNG HỌC") 
         main_title.setObjectName("main_title")
         subtitle = QLabel("PHÒNG VĂN HÓA - XÃ HỘI PHƯỜNG HỐ NAI")
         subtitle.setObjectName("subtitle")
         header_layout.addWidget(main_title, alignment=Qt.AlignCenter)
         header_layout.addWidget(subtitle, alignment=Qt.AlignCenter)
         layout.addWidget(header_frame)
-        layout.addStretch(1)
+        
         dashboard_layout = QGridLayout()
-        dashboard_layout.setSpacing(20)
+        dashboard_layout.setSpacing(25)
         dashboard_layout.setAlignment(Qt.AlignCenter)
         
         cards_info = [
-            ("QUẢN LÝ NĂM HỌC", "Thêm, sửa, xóa các năm học.", lambda: self.stacked_widget.setCurrentWidget(self.school_years_tab), "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='18' x='3' y='4' rx='2' ry='2'/><line x1='16' x2='16' y1='2' y2='6'/><line x1='8' x2='8' y1='2' y2='6'/><line x1='3' x2='21' y1='10' y2='10'/></svg>"),
-            ("QUẢN LÝ NHÀ TRƯỜNG", "Thêm, sửa, xóa thông tin các trường.", lambda: self.stacked_widget.setCurrentWidget(self.schools_tab), "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 22v-4a2 2 0 1 0-4 0v4'/><path d='M18 10V6a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4'/><path d='M22 10V6a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4'/><path d='M2 14v4a2 2 0 0 0 2 2h2'/><path d='M2 10v4a2 2 0 0 1-2 2h2'/><path d='M10 14v4a2 2 0 0 0 2 2h2'/><path d='M6 10v4a2 2 0 0 1 2 2h2'/><path d='M10 10v4a2 2 0 0 0 2 2h2'/></svg>"),
-            ("BÁO CÁO NỘP FILE", "Ban hành yêu cầu nộp văn bản, file.", lambda: self.stacked_widget.setCurrentWidget(self.file_tasks_tab), "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z'/><path d='M14 2v4a2 2 0 0 0 2 2h4'/><path d='M10 9H8'/><path d='M16 13H8'/><path d='M16 17H8'/></svg>"),
-            ("BÁO CÁO NHẬP LIỆU", "Ban hành yêu cầu nhập liệu qua Google Sheet.", lambda: self.stacked_widget.setCurrentWidget(self.data_reports_tab), "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21.17 13.17a2.39 2.39 0 0 0-1.05-1.05 2.5 2.5 0 0 0-3.17.22 2.5 2.5 0 0 0-.22 3.17 2.39 2.39 0 0 0 1.05 1.05 2.5 2.5 0 0 0 3.17-.22 2.5 2.5 0 0 0 .22-3.17Z'/><path d='M8.83 8.83a2.39 2.39 0 0 0-1.05-1.05 2.5 2.5 0 0 0-3.17.22 2.5 2.5 0 0 0-.22 3.17 2.39 2.39 0 0 0 1.05 1.05 2.5 2.5 0 0 0 3.17-.22 2.5 2.5 0 0 0 .22-3.17Z'/><path d='m12 2 4 4-2.5 2.5-4-4L12 2Z'/><path d='M2 12l4 4-2.5 2.5-4-4L2 12Z'/><path d='M12 22l4-4-2.5-2.5-4 4L12 22Z'/></svg>"),
-            ("XEM BÁO CÁO", "Xem trạng thái và tải về các báo cáo.", lambda: self.stacked_widget.setCurrentWidget(self.report_tab), "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21.21 15.89A10 10 0 1 1 8 2.83'/><path d='M22 12A10 10 0 0 0 12 2v10Z'/></svg>")
+            ("QUẢN LÝ NĂM HỌC", "Tạo và quản lý các năm học.", lambda: self.stacked_widget.setCurrentWidget(self.school_years_tab), '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3498db" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>'),
+            ("QUẢN LÝ NHÀ TRƯỜNG", "Thêm trường và cấp mã API.", lambda: self.stacked_widget.setCurrentWidget(self.schools_tab), '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#2ecc71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>'),
+            ("BÁO CÁO NỘP FILE", "Ban hành yêu cầu nộp văn bản.", lambda: self.stacked_widget.setCurrentWidget(self.file_tasks_tab), '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9b59b6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>'),
+            ("BÁO CÁO NHẬP LIỆU", "Ban hành yêu cầu qua Google Sheet.", lambda: self.stacked_widget.setCurrentWidget(self.data_reports_tab), '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e67e22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>'),
+            ("XEM BÁO CÁO", "Theo dõi và tải về các báo cáo.", lambda: self.stacked_widget.setCurrentWidget(self.report_tab), '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1abc9c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>'),
+            ("CÀI ĐẶT", "Các chức năng quản trị hệ thống.", lambda: self.stacked_widget.setCurrentWidget(self.settings_tab), '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#e74c3c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>')
         ]
         
         for i, (title, desc, action, icon) in enumerate(cards_info):
             card = DashboardCard(icon, title, desc)
             card.clicked.connect(action)
-            dashboard_layout.addWidget(card, i // 2, i % 2 if i < 4 else 0, 1, 2 if i >= 4 else 1)
+            dashboard_layout.addWidget(card, i // 3, i % 3)
 
         layout.addLayout(dashboard_layout)
         layout.addStretch(1)
-
+        
     def create_school_years_tab(self):
         layout = QVBoxLayout(self.school_years_tab)
         back_button = QPushButton("⬅️ Quay lại trang chủ")
@@ -749,6 +809,68 @@ class AdminWindow(QMainWindow):
                 self.load_data_reports()
             else:
                 QMessageBox.critical(self, "Lỗi", f"Không thể tạo báo cáo.\nLỗi: {response.json().get('detail', response.text)}")
+        except requests.exceptions.ConnectionError:
+            QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
+
+    def create_settings_tab(self):
+        layout = QVBoxLayout(self.settings_tab)
+        back_button = QPushButton("⬅️ Quay lại trang chủ")
+        back_button.clicked.connect(lambda: self.stacked_widget.setCurrentWidget(self.dashboard_tab))
+        layout.addWidget(back_button, alignment=Qt.AlignLeft)
+
+        danger_zone_card = QFrame()
+        danger_zone_card.setObjectName("card")
+        danger_zone_card.setStyleSheet("#card { border: 2px solid #e74c3c; }") # Viền đỏ
+        danger_layout = QVBoxLayout(danger_zone_card)
+
+        title = QLabel("🔴 KHU VỰC NGUY HIỂM")
+        title.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        title.setStyleSheet("color: #e74c3c;")
+        danger_layout.addWidget(title)
+
+        description = QLabel("Các hành động dưới đây không thể hoàn tác. Hãy chắc chắn trước khi thực hiện.")
+        description.setWordWrap(True)
+        danger_layout.addWidget(description)
+        
+        danger_layout.addSpacing(20)
+
+        self.reset_db_button = QPushButton("Xóa Toàn Bộ Dữ Liệu Demo")
+        self.reset_db_button.setStyleSheet("background-color: #e74c3c;")
+        self.reset_db_button.clicked.connect(self.handle_reset_database)
+        danger_layout.addWidget(self.reset_db_button)
+        
+        layout.addWidget(danger_zone_card)
+        layout.addStretch()
+
+    def handle_reset_database(self):
+        # Hộp thoại 1: Nhập mật khẩu
+        password, ok = QInputDialog.getText(self, "Yêu cầu Mật khẩu", "Vui lòng nhập mật khẩu quản trị để tiếp tục:", QLineEdit.Password)
+        
+        if not ok or not password:
+            return # Người dùng hủy
+
+        # Hộp thoại 2: Yêu cầu xác nhận bằng cách gõ lại
+        confirm_text, ok = QInputDialog.getText(self, "Xác nhận Lần cuối", 'Hành động này sẽ xóa TẤT CẢ năm học, trường, và báo cáo.\nĐể xác nhận, vui lòng gõ chính xác "XOA DU LIEU" vào ô bên dưới:')
+
+        if not ok or confirm_text != "XOA DU LIEU":
+            QMessageBox.warning(self, "Đã hủy", "Chuỗi xác nhận không chính xác. Hành động đã được hủy.")
+            return
+
+        # Gọi API
+        try:
+            payload = {"password": password}
+            response = requests.post(f"{API_URL}/admin/reset-database", json=payload)
+            
+            if response.status_code == 200:
+                QMessageBox.information(self, "Thành công", "Đã xóa toàn bộ dữ liệu thành công.")
+                # Tải lại tất cả dữ liệu để làm mới giao diện
+                self.load_school_years()
+                self.load_schools()
+                self.load_file_tasks()
+                self.load_data_reports()
+            else:
+                QMessageBox.critical(self, "Lỗi", f"Không thể xóa dữ liệu.\nLỗi từ server: {response.json().get('detail', response.text)}")
+
         except requests.exceptions.ConnectionError:
             QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server backend.")
 

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDateTime
 from PySide6.QtGui import QFont, QColor, QIcon
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = "https://auto-report-backend.onrender.com"
 CONFIG_FILE = "client_config.txt"
 GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive']
 DRIVE_TOKEN_FILE = 'token.json'
