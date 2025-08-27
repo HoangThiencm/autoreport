@@ -4,7 +4,7 @@ import os
 import json
 import webbrowser
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Tuple
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -19,13 +19,13 @@ from PySide6.QtWidgets import (
     QFileDialog, QHeaderView, QFrame, QTabWidget, QListWidget, QListWidgetItem,
     QProgressBar
 )
-from PySide6.QtCore import Qt, QDateTime, Signal, QUrl, QByteArray, QThread, QObject
+from PySide6.QtCore import Qt, QDateTime, Signal, QUrl, QByteArray, QThread, QObject, QUrlQuery
 from PySide6.QtGui import QFont, QIcon, QColor
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 API_URL = "https://auto-report-backend.onrender.com" 
 CONFIG_FILE = "client_config.json"
-GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive']
+GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/userinfo.email']
 DRIVE_TOKEN_FILE = 'token.json'
 
 def handle_api_error(self, status_code, response_text, context_message):
@@ -38,7 +38,7 @@ def handle_api_error(self, status_code, response_text, context_message):
     QMessageBox.critical(self, "Lỗi", f"{context_message}\nLỗi từ server (Code: {status_code}): {detail}")
 
 # --- PHẦN LOGIC GOOGLE DRIVE ---
-def get_drive_service():
+def get_drive_service() -> Tuple[object, str]:
     creds = None
     if os.path.exists(DRIVE_TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(DRIVE_TOKEN_FILE, GDRIVE_SCOPES)
@@ -52,7 +52,11 @@ def get_drive_service():
             creds = flow.run_local_server(port=0)
         with open(DRIVE_TOKEN_FILE, 'w') as token:
             token.write(creds.to_json())
-    return build('drive', 'v3', credentials=creds)
+    
+    service = build('drive', 'v3', credentials=creds)
+    user_info = service.about().get(fields='user').execute()
+    user_email = user_info.get('user', {}).get('emailAddress')
+    return service, user_email
 
 # --- WORKER MỚI CHO VIỆC TẢI FILE LÊN ---
 class UploadWorker(QObject):
@@ -118,6 +122,8 @@ class ClientWindow(QMainWindow):
             self.setWindowIcon(QIcon('baocao.ico'))
         self.setGeometry(200, 200, 1100, 800)
         self.api_key = self.load_api_key()
+        self.drive_service = None
+        self.user_email = None
 
         # --- PHỤC HỒI GIAO DIỆN ---
         self.setStyleSheet("""
@@ -171,8 +177,14 @@ class ClientWindow(QMainWindow):
             on_error(0, f"Lỗi mạng: {reply.errorString()}")
         reply.deleteLater()
 
-    def api_get(self, endpoint: str, on_success: Callable, on_error: Callable, headers: dict = None):
+    def api_get(self, endpoint: str, on_success: Callable, on_error: Callable, headers: dict = None, params: dict = None):
         url = QUrl(f"{API_URL}{endpoint}")
+        if params:
+            query = QUrlQuery()
+            for key, value in params.items():
+                query.addQueryItem(key, str(value))
+            url.setQuery(query)
+
         request = QNetworkRequest(url)
         if headers:
             for key, value in headers.items():
@@ -374,18 +386,35 @@ class ClientWindow(QMainWindow):
         self.submit_file_button.setDisabled(True)
         headers = {"x-api-key": self.api_key}
         
+        def on_generic_error(status, err_msg):
+            QMessageBox.critical(self, "Lỗi", f"Quá trình nộp bài thất bại.\n\nChi tiết: {err_msg}")
+            self.ft_status_label.setText("Nộp bài thất bại!")
+            self.progress_bar.hide()
+            self.submit_file_button.setDisabled(False)
+
+        def on_upload_error(err_msg):
+            on_generic_error(0, err_msg)
+
         def start_submission_process():
-            self.ft_status_label.setText("Đang lấy thông tin thư mục nộp bài...")
-            self.api_get(f"/file-tasks/{task_id}/upload-folder", on_folder_id_success, on_generic_error, headers=headers)
+            # First, authenticate with Google and get service/email
+            try:
+                if not self.drive_service or not self.user_email:
+                    self.ft_status_label.setText("Đang xác thực với Google...")
+                    self.drive_service, self.user_email = get_drive_service()
+                
+                if not self.user_email:
+                    raise ValueError("Không thể lấy được email người dùng từ Google.")
+
+                self.ft_status_label.setText("Đang lấy thông tin thư mục nộp bài...")
+                params = {"user_email": self.user_email}
+                self.api_get(f"/file-tasks/{task_id}/upload-folder", on_folder_id_success, on_generic_error, headers=headers, params=params)
+
+            except Exception as e:
+                on_generic_error(0, f"Lỗi xác thực Google Drive: {e}")
 
         def on_folder_id_success(data):
             upload_folder_id = data.get("folder_id")
-            self.ft_status_label.setText("Đang kết nối Google Drive...")
-            try:
-                service = get_drive_service()
-                start_upload_in_thread(service, upload_folder_id)
-            except Exception as e:
-                on_generic_error(0, f"Lỗi xác thực Google Drive: {e}")
+            start_upload_in_thread(self.drive_service, upload_folder_id)
 
         def start_upload_in_thread(service, folder_id):
             self.ft_status_label.setText("Đang tải file lên Google Drive...")
@@ -396,7 +425,7 @@ class ClientWindow(QMainWindow):
             self.upload_worker.moveToThread(self.upload_thread)
             self.upload_thread.started.connect(self.upload_worker.run)
             self.upload_worker.finished.connect(on_upload_finished)
-            self.upload_worker.error.connect(on_generic_error)
+            self.upload_worker.error.connect(on_upload_error) # FIX: Connect to the correct error handler
             self.upload_worker.progress.connect(self.progress_bar.setValue)
             self.upload_worker.finished.connect(self.upload_thread.quit)
             self.upload_worker.finished.connect(self.upload_worker.deleteLater)
@@ -414,12 +443,6 @@ class ClientWindow(QMainWindow):
             self.ft_status_label.setText(f"Đã nộp bài thành công cho ID {task_id}.")
             self.submit_file_button.setDisabled(False)
             self.refresh_data()
-
-        def on_generic_error(status, err_msg):
-            QMessageBox.critical(self, "Lỗi", f"Quá trình nộp bài thất bại.\n\nChi tiết: {err_msg}")
-            self.ft_status_label.setText("Nộp bài thất bại!")
-            self.progress_bar.hide()
-            self.submit_file_button.setDisabled(False)
         
         start_submission_process()
 
@@ -503,8 +526,12 @@ class ClientWindow(QMainWindow):
 
     def edit_api_key_handler(self):
         self.api_key = None
+        self.drive_service = None
+        self.user_email = None
         if os.path.exists(CONFIG_FILE):
             os.remove(CONFIG_FILE)
+        if os.path.exists(DRIVE_TOKEN_FILE):
+            os.remove(DRIVE_TOKEN_FILE)
         self.update_ui_for_api_key()
         self.ft_todo_table.setRowCount(0)
         self.ft_overdue_table.setRowCount(0)
