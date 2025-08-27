@@ -3,7 +3,9 @@ import sys
 import os
 import webbrowser
 import requests
+import json
 from typing import Callable
+
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -49,7 +51,7 @@ def handle_api_error(self, response, context_message):
     except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
         detail = response.text
     QMessageBox.critical(self, "Lỗi", f"{context_message}\nLỗi từ server: {detail}")
-
+    
 # --- CÁC WIDGET TÙY CHỈNH ---
 class SchoolListItemWidget(QWidget):
     def __init__(self, school_id, name, api_key, parent=None):
@@ -149,6 +151,7 @@ class DashboardCard(QPushButton):
 class AdminWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.running_threads = [] # THAY ĐỔI: Danh sách để quản lý các luồng
         self.setWindowTitle("Bảng điều khiển cho Quản trị viên")
         if os.path.exists('baocao.ico'):
             self.setWindowIcon(QIcon('baocao.ico'))
@@ -185,18 +188,27 @@ class AdminWindow(QMainWindow):
         self.stacked_widget.setCurrentWidget(self.dashboard_tab)
         
         self.load_all_initial_data()
-
+        
     def run_in_thread(self, func, on_finish, on_error, *args, **kwargs):
-        self.thread = QThread()
-        self.worker = Worker(func, *args, **kwargs)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.finished.connect(on_finish)
-        self.worker.error.connect(on_error)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.start()
+        thread = QThread()
+        worker = Worker(func, *args, **kwargs)
+        worker.moveToThread(thread)
+        
+        thread.started.connect(worker.run)
+        worker.finished.connect(on_finish)
+        worker.error.connect(on_error)
+        
+        # Dọn dẹp sau khi hoàn thành
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        
+        # THAY ĐỔI: Xóa thread khỏi danh sách quản lý khi nó kết thúc
+        thread.finished.connect(lambda: self.running_threads.remove(thread))
+        
+        # THAY ĐỔI: Lưu tham chiếu đến thread để nó không bị hủy sớm
+        self.running_threads.append(thread)
+        thread.start()
 
     def load_all_initial_data(self):
         self.load_school_years()
