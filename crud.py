@@ -27,46 +27,54 @@ SERVER_SCOPES = [
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
 def _get_google_service(service_name: str, version: str):
-    print(f"DEBUG [crud]: Attempting to get Google service '{service_name}'...") # DEBUG
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        print(f"DEBUG [crud]: ERROR - Service account file not found at '{SERVICE_ACCOUNT_FILE}'") # DEBUG
         raise FileNotFoundError(f"Không tìm thấy file khóa dịch vụ trên server: '{SERVICE_ACCOUNT_FILE}'")
     
     try:
         creds = service_account.Credentials.from_service_account_file(
             SERVICE_ACCOUNT_FILE, scopes=SERVER_SCOPES)
         service = build(service_name, version, credentials=creds)
-        print(f"DEBUG [crud]: Successfully built Google service '{service_name}'.") # DEBUG
         return service, creds
     except Exception as e:
-        print(f"DEBUG [crud]: ERROR - Failed to build Google service: {e}") # DEBUG
         raise
+
+def _share_folder_with_user(service, folder_id: str, user_email: str):
+    try:
+        permission = {
+            'type': 'user',
+            'role': 'writer',
+            'emailAddress': user_email
+        }
+        service.permissions().create(
+            fileId=folder_id,
+            body=permission,
+            fields='id'
+        ).execute()
+        print(f"Successfully shared folder {folder_id} with {user_email}")
+        return True
+    except HttpError as e:
+        # If permission already exists, it might raise an error. We can often ignore it.
+        if e.resp.status == 403:
+             print(f"Could not share folder {folder_id} with {user_email}. Maybe permission already exists? Error: {e}")
+             return True # Assume it's okay
+        print(f"An error occurred while sharing folder: {e}")
+        return False
 
 def _get_or_create_folder(service, name: str, parent_id: str):
     try:
         folder_name_ascii = unidecode(name)
         query = f"name='{folder_name_ascii}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         
-        print(f"DEBUG [crud]: Searching for folder with query: {query}") # DEBUG
         response = service.files().list(q=query, spaces='drive', fields='files(id)').execute()
         folders = response.get('files', [])
         
         if folders:
-            folder_id = folders[0].get('id')
-            print(f"DEBUG [crud]: Found existing folder '{name}' with ID: {folder_id}") # DEBUG
-            return folder_id
+            return folders[0].get('id')
         
-        print(f"DEBUG [crud]: Folder '{name}' not found. Creating new one...") # DEBUG
         folder_metadata = {'name': folder_name_ascii, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
         folder = service.files().create(body=folder_metadata, fields='id').execute()
-        folder_id = folder.get('id')
-        print(f"DEBUG [crud]: Successfully created folder '{name}' with ID: {folder_id}") # DEBUG
-        return folder_id
+        return folder.get('id')
     except HttpError as e:
-        print(f"DEBUG [crud]: ERROR - HttpError while getting/creating folder '{name}': {e}") # DEBUG
-        return None
-    except Exception as e:
-        print(f"DEBUG [crud]: ERROR - A general error occurred in _get_or_create_folder: {e}") # DEBUG
         return None
 
 def extract_drive_file_id_from_url(url: str) -> Optional[str]:
@@ -98,32 +106,25 @@ def get_school_years(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.SchoolYear).order_by(models.SchoolYear.start_date.desc()).offset(skip).limit(limit).all()
 
 def create_school_year(db: Session, school_year: schemas.SchoolYearCreate):
-    print("DEBUG [crud]: Starting create_school_year process...") # DEBUG
     try:
         drive_service, _ = _get_google_service('drive', 'v3')
-        print(f"DEBUG [crud]: Attempting to create Drive folder for school year '{school_year.name}'...") # DEBUG
         folder_id = _get_or_create_folder(drive_service, school_year.name, ROOT_DRIVE_FOLDER_ID)
         
         if not folder_id:
-            print("DEBUG [crud]: ERROR - Failed to get or create Drive folder. Aborting.") # DEBUG
             return None
         
-        print(f"DEBUG [crud]: Drive folder created/found. Committing to database...") # DEBUG
         db_school_year = models.SchoolYear(**school_year.dict(), drive_folder_id=folder_id)
         db.add(db_school_year)
         db.commit()
         db.refresh(db_school_year)
-        print("DEBUG [crud]: Successfully created school year in database.") # DEBUG
         return db_school_year
     except Exception as e:
-        print(f"DEBUG [crud]: ERROR - An exception occurred in create_school_year: {e}") # DEBUG
         db.rollback()
         return None
 
 def delete_school_year(db: Session, school_year_id: int):
     db_school_year = db.query(models.SchoolYear).filter(models.SchoolYear.id == school_year_id).first()
     if db_school_year:
-        # Note: This does not delete the folder from Google Drive to prevent data loss.
         db.delete(db_school_year)
         db.commit()
     return db_school_year
@@ -159,7 +160,7 @@ def delete_school(db: Session, school_id: int):
         db.commit()
     return db_school
 
-def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: int) -> Optional[str]:
+def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: int, user_email: str) -> Optional[str]:
     task = db.query(models.FileTask).options(joinedload(models.FileTask.school_year)).filter(models.FileTask.id == task_id).first()
     school = db.query(models.School).filter(models.School.id == school_id).first()
     if not task or not school or not task.school_year or not task.school_year.drive_folder_id:
@@ -170,6 +171,11 @@ def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: i
         return None
     month_name = f"Thang {datetime.now().strftime('%m-%Y')}"
     monthly_folder_id = _get_or_create_folder(drive_service, month_name, school_folder_id)
+    
+    # Share the final folder with the user
+    if monthly_folder_id and user_email:
+        _share_folder_with_user(drive_service, monthly_folder_id, user_email)
+
     return monthly_folder_id
 
 def get_file_tasks(db: Session, school_year_id: Optional[int] = None, current_school_id: Optional[int] = None, skip: int = 0, limit: int = 100):
