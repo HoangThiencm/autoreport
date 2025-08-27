@@ -1,0 +1,34 @@
+pip install fastapi "uvicorn[standard]"
+
+pip install apscheduler
+
+uvicorn main:app --reload
+pip install gspread
+
+pip install clipboard
+
+pip install unidecode
+
+Đưa lên render.com
+
+pip freeze > requirements.txt
+
+https://drive.google.com/drive/u/2/folders/13di1au2iwdr5cbz57b4q_SEK-RF5ZiiC
+
+
+git remote add origin https://github.com/HoangThiencm/autoreport.git
+git branch -M main
+git push -u origin main
+
+Chào bạn, câu hỏi của bạn rất hay.
+
+Về mặt kỹ thuật, chúng ta có thể nhúng một trang web (như Google Sheet) vào ứng dụng bằng một thành phần trình duyệt web. Tuy nhiên, đối với trường hợp cụ thể này, tôi thực sự không khuyến khích làm như vậy vì những lý do quan trọng sau:
+
+
+Bước 1: Người dùng nhấn nút trong client_app.
+
+Bước 2: Ứng dụng mở trang Google Sheet trên trình duyệt Chrome/Cốc Cốc... mà họ quen dùng.
+
+Bước 3: Sau khi nhập liệu xong, họ quay lại ứng dụng và nhấn nút "Đánh dấu là đã hoàn thành".
+
+Cách làm này vừa tận dụng được sức mạnh của Google Sheets, vừa đảm bảo ứng dụng của chúng ta chạy ổn định và an toàn.

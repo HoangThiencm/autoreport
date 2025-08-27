@@ -1,0 +1,11 @@
+# Configuration files
+credentials_oauth.json
+token.json
+client_config.txt
+
+# Database file
+app.db
+
+# Python generated files
+__pycache__/
+*.pyc
