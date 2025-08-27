@@ -8,9 +8,7 @@ from typing import Optional, Set, List, Tuple
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2 import service_account # THAY ĐỔI QUAN TRỌNG
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
@@ -18,7 +16,8 @@ import gspread
 
 import models, schemas
 
-ROOT_DRIVE_FOLDER_ID = "1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L"
+# Vui lòng kiểm tra lại ID này, đảm bảo Service Account có quyền Editor trên thư mục này
+ROOT_DRIVE_FOLDER_ID = "1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L" 
 
 SERVER_SCOPES = [
     'https://www.googleapis.com/auth/drive',
@@ -26,31 +25,35 @@ SERVER_SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets'
 ]
 
+# Tên file khóa bạn đã tải về
+SERVICE_ACCOUNT_FILE = 'service_account.json'
+
 def _get_google_service(service_name: str, version: str):
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SERVER_SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists('credentials_oauth.json'):
-                raise FileNotFoundError("Server không tìm thấy file credentials_oauth.json.")
-            flow = InstalledAppFlow.from_client_secrets_file('credentials_oauth.json', SERVER_SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return build(service_name, version, credentials=creds), creds
+    """
+    Xác thực bằng Service Account và trả về một đối tượng service của Google.
+    Hàm này được thiết kế để chạy trên server.
+    """
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        # Lỗi này sẽ hiển thị trong log của Render nếu bạn quên upload file
+        raise FileNotFoundError(f"Không tìm thấy file khóa dịch vụ trên server: '{SERVICE_ACCOUNT_FILE}'")
+    
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SERVER_SCOPES)
+        
+    service = build(service_name, version, credentials=creds)
+    return service, creds
 
 def _get_or_create_folder(service, name: str, parent_id: str):
     try:
-        query = f"name='{unidecode(name)}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        # Sử dụng unidecode để tạo tên thư mục không dấu, tránh lỗi
+        folder_name_ascii = unidecode(name)
+        query = f"name='{folder_name_ascii}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         response = service.files().list(q=query, spaces='drive', fields='files(id)').execute()
         folders = response.get('files', [])
         if folders:
             return folders[0].get('id')
         
-        folder_metadata = {'name': unidecode(name), 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
+        folder_metadata = {'name': folder_name_ascii, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
         folder = service.files().create(body=folder_metadata, fields='id').execute()
         return folder.get('id')
     except HttpError as e:

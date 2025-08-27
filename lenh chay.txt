@@ -13,11 +13,14 @@ pip install unidecode
 
 pip freeze > requirements.txt
 
-https://drive.google.com/drive/u/2/folders/13di1au2iwdr5cbz57b4q_SEK-RF5ZiiC
+1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L
 
 postgresql://auto_report_db_user:Tl5h81DhKEPTmiX05SMb1G7NrMEszHEE@dpg-d2nabru3jp1c73cdukqg-a/auto_report_db
 
 https://auto-report-backend.onrender.com
+
+auto-report-server@auto-report-project.iam.gserviceaccount.com
+
 #e74c3c
 # Mật khẩu đơn giản để bảo vệ chức năng reset
 RESET_PASSWORD = "admin_reset_123"
@@ -26,7 +29,7 @@ Lưu ý: dua len lai github
 git add .
 
 # 2. Tạo một commit với mô tả rõ ràng
-git commit -m "Add database reset functionality"
+git commit -m "DIEU CHINH TOKEN"
 
 # 3. Đẩy code lên GitHub
 git push origin main
