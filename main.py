@@ -49,7 +49,7 @@ def start_scheduler():
     scheduler.add_job(
         check_deadlines_and_send_email,
         'interval',
-        seconds=30,
+        hours=1,
         id="deadline_check_job",
         replace_existing=True,
         misfire_grace_time=60  # Cho phép trễ 60 giây nếu server bị treo tạm thời
