@@ -124,11 +124,12 @@ def create_new_file_task(task: schemas.FileTaskCreate, db: Session = Depends(get
 
 @app.get("/file-tasks/{task_id}/upload-folder")
 def get_upload_folder_for_task(
-    task_id: int, 
+    task_id: int,
+    user_email: str,
     db: Session = Depends(get_db),
     current_school: models.School = Depends(get_school_from_api_key)
 ):
-    folder_id = crud.get_or_create_file_submission_folder(db, task_id=task_id, school_id=current_school.id)
+    folder_id = crud.get_or_create_file_submission_folder(db, task_id=task_id, school_id=current_school.id, user_email=user_email)
     if not folder_id:
         raise HTTPException(status_code=404, detail="Không thể tìm hoặc tạo thư mục nộp bài. Vui lòng kiểm tra lại thông tin Năm học của yêu cầu này.")
     return {"folder_id": folder_id}
