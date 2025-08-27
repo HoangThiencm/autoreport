@@ -5,6 +5,7 @@ import json
 import webbrowser
 import requests
 from datetime import datetime
+from typing import Callable
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -18,14 +19,35 @@ from PySide6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QLineEdit, QLabel,
     QFileDialog, QHeaderView, QFrame, QTabWidget, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, QDateTime
-from PySide6.QtGui import QFont, QColor, QIcon
+from PySide6.QtCore import Qt, QDateTime, QTimer, QThread, QObject, Signal
 
 API_URL = "https://auto-report-backend.onrender.com"
 CONFIG_FILE = "client_config.txt"
 GDRIVE_SCOPES = ['https://www.googleapis.com/auth/drive']
 DRIVE_TOKEN_FILE = 'token.json'
 
+# --- HỆ THỐNG ĐA LUỒNG ĐỂ CHỐNG LAG ---
+class Worker(QObject):
+    """
+    Worker sẽ thực hiện các tác vụ nặng trong một luồng riêng.
+    """
+    finished = Signal(object)  # Tín hiệu phát ra khi xong, mang theo kết quả
+    error = Signal(str)        # Tín hiệu phát ra khi có lỗi
+
+    def __init__(self, func: Callable, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            result = self.func(*self.args, **self.kwargs)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+# --- PHẦN LOGIC GOOGLE DRIVE ---
 def get_drive_service():
     creds = None
     if os.path.exists(DRIVE_TOKEN_FILE):
@@ -53,6 +75,7 @@ def upload_file_to_drive(service, file_path, folder_id):
     except HttpError as error:
         return (None, f"Lỗi Google API: {error}")
 
+# --- WIDGET TÙY CHỈNH CHO DANH SÁCH YÊU CẦU ---
 class ListItemWidget(QWidget):
     def __init__(self, item_id, title, deadline, is_submitted, is_reminded, parent=None):
         super().__init__(parent)
@@ -72,6 +95,7 @@ class ListItemWidget(QWidget):
             self.setStyleSheet("background-color: #fff3cd;") # Màu vàng nhạt
             title_label.setText(f"<b>ID {item_id}: {title} (Cần chú ý!)</b>")
 
+# --- GIAO DIỆN CHÍNH ---
 class ClientWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -86,6 +110,7 @@ class ClientWindow(QMainWindow):
             QLineEdit, QDateTimeEdit, QComboBox { border: 1px solid #ced4da; border-radius: 5px; padding: 10px; font-size: 16px; }
             QPushButton { background-color: #3498db; color: white; border: none; padding: 12px 18px; border-radius: 5px; font-weight: bold; font-size: 16px; }
             QPushButton:hover { background-color: #2980b9; }
+            QPushButton:disabled { background-color: #bdc3c7; }
             QLabel { font-weight: bold; color: #34495e; font-size: 16px; }
             QTableWidget, QListWidget { border: 1px solid #dfe4ea; border-radius: 5px; background-color: #ffffff; font-size: 16px; }
             QHeaderView::section { background-color: #34495e; color: white; padding: 8px; font-size: 15px; border: none;}
@@ -94,9 +119,12 @@ class ClientWindow(QMainWindow):
             QTabBar::tab:hover { background-color: #d5dbdb; }
             QTabBar::tab:selected { background-color: #3498db; color: white; }
         """)
+        
         central_widget = QWidget()
         self.layout = QVBoxLayout(central_widget)
+        
         self.create_api_key_ui()
+        
         self.tab_widget = QTabWidget()
         self.file_submission_tab = QWidget()
         self.data_entry_tab = QWidget()
@@ -104,17 +132,42 @@ class ClientWindow(QMainWindow):
         self.tab_widget.addTab(self.data_entry_tab, "Báo cáo Nhập liệu (Google Sheet)")
         self.layout.addWidget(self.tab_widget)
         self.setCentralWidget(central_widget)
+        
         self.create_file_submission_ui()
         self.create_data_entry_ui()
+        
+        self.setup_auto_refresh_timer()
+
         self.update_ui_for_api_key()
         if self.api_key:
             self.fetch_school_info()
-            self.load_file_tasks()
-            self.load_data_reports()
         else:
             QMessageBox.information(self, "Chào mừng", "Vui lòng nhập Mã API được cung cấp và nhấn 'Lưu'.")
 
+    def run_in_thread(self, func, on_finish, on_error, *args, **kwargs):
+        self.thread = QThread()
+        self.worker = Worker(func, *args, **kwargs)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(on_finish)
+        self.worker.error.connect(on_error)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+
+    def setup_auto_refresh_timer(self):
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self.refresh_data)
+
+    def refresh_data(self):
+        if self.api_key:
+            print(f"[{datetime.now()}] Tự động làm mới dữ liệu...")
+            self.load_file_tasks()
+            self.load_data_reports()
+
     def create_api_key_ui(self):
+        # ... (Không thay đổi)
         api_key_card = QFrame()
         api_key_card.setObjectName("card")
         api_key_layout = QVBoxLayout(api_key_card)
@@ -138,6 +191,7 @@ class ClientWindow(QMainWindow):
         self.edit_api_key_button.clicked.connect(self.edit_api_key_handler)
 
     def create_file_submission_ui(self):
+        # ... (Không thay đổi)
         layout = QVBoxLayout(self.file_submission_tab)
         tasks_card = QFrame()
         tasks_card.setObjectName("card")
@@ -145,8 +199,8 @@ class ClientWindow(QMainWindow):
         tasks_title_label = QLabel("Danh sách Công việc Nộp File")
         tasks_title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
         tasks_layout.addWidget(tasks_title_label)
-        self.load_ft_button = QPushButton("Tải lại danh sách")
-        self.load_ft_button.clicked.connect(self.load_file_tasks)
+        self.load_ft_button = QPushButton("Tải lại danh sách thủ công")
+        self.load_ft_button.clicked.connect(self.refresh_data)
         tasks_layout.addWidget(self.load_ft_button)
         tables_layout = QHBoxLayout()
         todo_group = QVBoxLayout()
@@ -177,6 +231,7 @@ class ClientWindow(QMainWindow):
         self.ft_overdue_table.itemSelectionChanged.connect(self.on_table_selection_changed)
 
     def create_data_entry_ui(self):
+        # ... (Không thay đổi)
         layout = QVBoxLayout(self.data_entry_tab)
         list_card = QFrame()
         list_card.setObjectName("card")
@@ -184,8 +239,8 @@ class ClientWindow(QMainWindow):
         list_title_label = QLabel("Danh sách Báo cáo Nhập liệu")
         list_title_label.setFont(QFont("Segoe UI", 18, QFont.Bold))
         list_layout.addWidget(list_title_label)
-        self.load_dr_button = QPushButton("Tải lại danh sách")
-        self.load_dr_button.clicked.connect(self.load_data_reports)
+        self.load_dr_button = QPushButton("Tải lại danh sách thủ công")
+        self.load_dr_button.clicked.connect(self.refresh_data)
         list_layout.addWidget(self.load_dr_button)
         self.dr_list_widget = QListWidget()
         list_layout.addWidget(self.dr_list_widget)
@@ -208,6 +263,7 @@ class ClientWindow(QMainWindow):
         layout.addWidget(action_card)
 
     def create_tasks_table(self):
+        # ... (Không thay đổi)
         table = QTableWidget()
         table.setColumnCount(3)
         table.setHorizontalHeaderLabels(["Tiêu đề", "Hạn chót", "Trạng thái"])
@@ -217,6 +273,7 @@ class ClientWindow(QMainWindow):
         return table
         
     def on_table_selection_changed(self):
+        # ... (Không thay đổi)
         sender = self.sender()
         if not sender or not sender.selectedItems(): return
         other_table = self.ft_overdue_table if sender == self.ft_todo_table else self.ft_todo_table
@@ -224,11 +281,13 @@ class ClientWindow(QMainWindow):
         other_table.clearSelection()
         other_table.blockSignals(False)
 
+    # --- CÁC HÀM TẢI DỮ LIỆU ĐÃ ĐƯỢC NÂNG CẤP ---
     def load_file_tasks(self):
         if not self.api_key: return
-        try:
-            headers = {"x-api-key": self.api_key}
-            response = requests.get(f"{API_URL}/file-tasks/", headers=headers)
+        self.load_ft_button.setDisabled(True)
+        self.load_ft_button.setText("Đang tải...")
+        
+        def on_finish(response):
             self.ft_todo_table.setRowCount(0)
             self.ft_overdue_table.setRowCount(0)
             if response.status_code == 200:
@@ -259,38 +318,55 @@ class ClientWindow(QMainWindow):
                             table.item(row, col).setBackground(QColor("#fff3cd"))
             else:
                 QMessageBox.critical(self, "Lỗi API", "Không thể tải danh sách công việc nộp file.")
-        except requests.exceptions.ConnectionError:
-            QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server.")
+            self.load_ft_button.setDisabled(False)
+            self.load_ft_button.setText("Tải lại danh sách thủ công")
+
+        def on_error(err_msg):
+            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
+            self.load_ft_button.setDisabled(False)
+            self.load_ft_button.setText("Tải lại danh sách thủ công")
+        
+        headers = {"x-api-key": self.api_key}
+        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/file-tasks/", headers=headers)
 
     def submit_file_handler(self):
+        # ... (Hàm này phức tạp, sẽ nâng cấp sau nếu cần)
         selected_table = self.ft_todo_table if self.ft_todo_table.selectedItems() else self.ft_overdue_table
         if not selected_table.selectedItems():
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một công việc để nộp file.")
             return
+
         row = selected_table.currentRow()
         task_id = selected_table.item(row, 0).data(Qt.UserRole)
         if "Đã thực hiện" in selected_table.item(row, 2).text():
             if QMessageBox.question(self, 'Xác nhận', "Công việc này đã được nộp. Bạn có muốn nộp lại file khác không?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.No:
                 return
+
         file_path, _ = QFileDialog.getOpenFileName(self, "Chọn file để nộp")
         if not file_path: return
+
         try:
             self.ft_status_label.setText("Đang lấy thông tin thư mục nộp file...")
             QApplication.processEvents()
+
             headers = {"x-api-key": self.api_key}
             response = requests.get(f"{API_URL}/file-tasks/{task_id}/upload-folder", headers=headers)
             if response.status_code != 200:
                 raise Exception(f"Lỗi lấy thư mục: {response.json().get('detail', response.text)}")
+            
             upload_folder_id = response.json().get("folder_id")
             if not upload_folder_id:
                  raise Exception("Server không trả về ID thư mục hợp lệ.")
+
             self.ft_status_label.setText("Đang kết nối Google Drive...")
             QApplication.processEvents()
             service = get_drive_service()
+            
             self.ft_status_label.setText("Đang tải file lên...")
             QApplication.processEvents()
             file_url, error = upload_file_to_drive(service, file_path, upload_folder_id)
             if error: raise Exception(error)
+            
             self.ft_status_label.setText("Đang báo cáo về server...")
             QApplication.processEvents()
             payload = {"task_id": task_id, "file_url": file_url}
@@ -298,7 +374,7 @@ class ClientWindow(QMainWindow):
             if response.status_code == 200:
                 QMessageBox.information(self, "Hoàn tất", "Nộp báo cáo thành công!")
                 self.ft_status_label.setText(f"Đã nộp bài thành công cho ID {task_id}.")
-                self.load_file_tasks()
+                self.refresh_data()
             else:
                 raise Exception(response.json().get('detail', response.text))
         except Exception as e:
@@ -307,9 +383,10 @@ class ClientWindow(QMainWindow):
 
     def load_data_reports(self):
         if not self.api_key: return
-        try:
-            headers = {"x-api-key": self.api_key}
-            response = requests.get(f"{API_URL}/data-reports/", headers=headers)
+        self.load_dr_button.setDisabled(True)
+        self.load_dr_button.setText("Đang tải...")
+
+        def on_finish(response):
             if response.status_code == 200:
                 self.dr_list_widget.clear()
                 for report in response.json():
@@ -325,10 +402,19 @@ class ClientWindow(QMainWindow):
                     self.dr_list_widget.setItemWidget(list_item, custom_widget)
             else:
                 QMessageBox.critical(self, "Lỗi API", "Không thể tải danh sách báo cáo nhập liệu.")
-        except requests.exceptions.ConnectionError:
-            QMessageBox.critical(self, "Lỗi kết nối", "Không thể kết nối đến server.")
+            self.load_dr_button.setDisabled(False)
+            self.load_dr_button.setText("Tải lại danh sách thủ công")
+            
+        def on_error(err_msg):
+            QMessageBox.critical(self, "Lỗi kết nối", f"Không thể kết nối đến server.\n{err_msg}")
+            self.load_dr_button.setDisabled(False)
+            self.load_dr_button.setText("Tải lại danh sách thủ công")
+
+        headers = {"x-api-key": self.api_key}
+        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/data-reports/", headers=headers)
 
     def open_google_sheet(self):
+        # ... (Không thay đổi)
         current_item = self.dr_list_widget.currentItem()
         if not current_item:
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một báo cáo từ danh sách.")
@@ -341,18 +427,23 @@ class ClientWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi", "Không tìm thấy đường dẫn trang tính cho báo cáo này.")
 
     def mark_as_complete(self):
+        # ... (Sẽ nâng cấp sau)
         current_item = self.dr_list_widget.currentItem()
         if not current_item:
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn một báo cáo từ danh sách.")
             return
+        
         report_data = current_item.data(Qt.UserRole)
         report_id = report_data['id']
+
         if report_data.get('is_submitted'):
             QMessageBox.information(self, "Thông báo", "Báo cáo này đã được đánh dấu hoàn thành trước đó.")
             return
+
         reply = QMessageBox.question(self, 'Xác nhận', "Bạn có chắc chắn đã nhập liệu xong và muốn đánh dấu là hoàn thành không?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.No:
             return
+
         self.dr_status_label.setText("Đang gửi xác nhận...")
         QApplication.processEvents()
         try:
@@ -361,7 +452,7 @@ class ClientWindow(QMainWindow):
             if response.status_code == 200:
                 QMessageBox.information(self, "Thành công", "Đã đánh dấu báo cáo là hoàn thành.")
                 self.dr_status_label.setText(f"Đã hoàn thành báo cáo ID {report_id}.")
-                self.load_data_reports()
+                self.refresh_data()
             else:
                 raise Exception(response.json().get('detail', response.text))
         except Exception as e:
@@ -369,6 +460,7 @@ class ClientWindow(QMainWindow):
             self.dr_status_label.setText("Thao tác thất bại!")
 
     def update_ui_for_api_key(self):
+        # ... (Không thay đổi)
         if self.api_key:
             self.api_key_input.setText("**********")
             self.api_key_input.setDisabled(True)
@@ -382,7 +474,9 @@ class ClientWindow(QMainWindow):
             self.school_info_label.setText("Trạng thái: Chưa cấu hình.")
 
     def edit_api_key_handler(self):
+        # ... (Không thay đổi)
         self.api_key = None
+        self.refresh_timer.stop() 
         if os.path.exists(CONFIG_FILE):
             os.remove(CONFIG_FILE)
         self.update_ui_for_api_key()
@@ -393,40 +487,45 @@ class ClientWindow(QMainWindow):
         QMessageBox.information(self, "Thông báo", "Vui lòng nhập Mã API mới và nhấn 'Lưu'.")
 
     def fetch_school_info(self):
-        if not self.api_key: return False
-        try:
-            headers = {"x-api-key": self.api_key}
-            response = requests.get(f"{API_URL}/schools/me", headers=headers)
+        if not self.api_key: return
+        self.school_info_label.setText("Đang xác thực API Key...")
+        
+        def on_finish(response):
             if response.status_code == 200:
                 data = response.json()
                 self.school_info_label.setText(f"Đang làm việc với tư cách: Trường {data.get('name')}")
-                return True
+                self.refresh_data()
+                self.refresh_timer.start(300000)
             else:
                 self.school_info_label.setText("Trạng thái: Mã API không hợp lệ.")
                 self.edit_api_key_handler()
-                return False
-        except requests.exceptions.ConnectionError:
+
+        def on_error(err_msg):
             self.school_info_label.setText("Trạng thái: Không thể kết nối đến server.")
-            return False
+
+        headers = {"x-api-key": self.api_key}
+        self.run_in_thread(requests.get, on_finish, on_error, f"{API_URL}/schools/me", headers=headers)
 
     def load_api_key(self):
+        # ... (Không thay đổi)
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 return f.read().strip()
         return None
 
     def save_api_key_handler(self):
+        # ... (Sẽ nâng cấp sau)
         key = self.api_key_input.text().strip()
         if not key:
             QMessageBox.warning(self, "Lỗi", "Mã API không được để trống.")
             return
         self.api_key = key
+        
+        # Tạm thời vẫn dùng cách cũ để xác thực key lần đầu
         if self.fetch_school_info():
             with open(CONFIG_FILE, 'w') as f:
                 f.write(self.api_key)
             self.update_ui_for_api_key()
-            self.load_file_tasks()
-            self.load_data_reports()
         else:
             self.api_key = None
 
