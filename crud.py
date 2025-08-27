@@ -26,21 +26,21 @@ SERVER_SCOPES = [
 
 SERVICE_ACCOUNT_FILE = 'service_account.json'
 
-# def _get_google_service(service_name: str, version: str):
-    # print(f"DEBUG [crud]: Attempting to get Google service '{service_name}'...") # DEBUG
-    # if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        # print(f"DEBUG [crud]: ERROR - Service account file not found at '{SERVICE_ACCOUNT_FILE}'") # DEBUG
-        # raise FileNotFoundError(f"Không tìm thấy file khóa dịch vụ trên server: '{SERVICE_ACCOUNT_FILE}'")
+def _get_google_service(service_name: str, version: str):
+    print(f"DEBUG [crud]: Attempting to get Google service '{service_name}'...") # DEBUG
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        print(f"DEBUG [crud]: ERROR - Service account file not found at '{SERVICE_ACCOUNT_FILE}'") # DEBUG
+        raise FileNotFoundError(f"Không tìm thấy file khóa dịch vụ trên server: '{SERVICE_ACCOUNT_FILE}'")
     
-    # try:
-        # creds = service_account.Credentials.from_service_account_file(
-            # SERVICE_ACCOUNT_FILE, scopes=SERVER_SCOPES)
-        # service = build(service_name, version, credentials=creds)
-        # print(f"DEBUG [crud]: Successfully built Google service '{service_name}'.") # DEBUG
-        # return service, creds
-    # except Exception as e:
-        # print(f"DEBUG [crud]: ERROR - Failed to build Google service: {e}") # DEBUG
-        # raise
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SERVER_SCOPES)
+        service = build(service_name, version, credentials=creds)
+        print(f"DEBUG [crud]: Successfully built Google service '{service_name}'.") # DEBUG
+        return service, creds
+    except Exception as e:
+        print(f"DEBUG [crud]: ERROR - Failed to build Google service: {e}") # DEBUG
+        raise
 
 def _get_or_create_folder(service, name: str, parent_id: str):
     try:
