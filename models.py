@@ -8,7 +8,7 @@ from database import Base
 
 class SchoolYear(Base):
     __tablename__ = "school_years"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String, unique=True, index=True, nullable=False)
     start_date = Column(Date)
     end_date = Column(Date)
@@ -20,18 +20,17 @@ def generate_uuid():
 
 class School(Base):
     __tablename__ = "schools"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String, unique=True, index=True, nullable=False)
     api_key = Column(String, unique=True, index=True, default=generate_uuid)
     
     file_submissions = relationship("FileSubmission", back_populates="school", cascade="all, delete-orphan")
     data_entries = relationship("DataEntry", back_populates="school", cascade="all, delete-orphan")
-    # THÊM MỚI: Mối quan hệ với bảng nhắc nhở
     reminders = relationship("TaskReminder", back_populates="school", cascade="all, delete-orphan")
 
 class FileTask(Base):
     __tablename__ = "file_tasks"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     title = Column(String, index=True, nullable=False)
     content = Column(String)
     deadline = Column(DateTime, nullable=False)
@@ -45,7 +44,7 @@ class FileTask(Base):
 
 class FileSubmission(Base):
     __tablename__ = "file_submissions"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     task_id = Column(Integer, ForeignKey("file_tasks.id"))
     school_id = Column(Integer, ForeignKey("schools.id"))
     file_url = Column(String, nullable=False)
@@ -56,7 +55,7 @@ class FileSubmission(Base):
 
 class DataReport(Base):
     __tablename__ = "data_reports"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     title = Column(String, index=True, nullable=False)
     deadline = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -70,7 +69,7 @@ class DataReport(Base):
 
 class DataEntry(Base):
     __tablename__ = "data_entries"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     report_id = Column(Integer, ForeignKey("data_reports.id"))
     school_id = Column(Integer, ForeignKey("schools.id"))
     
@@ -80,10 +79,9 @@ class DataEntry(Base):
     report = relationship("DataReport", back_populates="entries")
     school = relationship("School", back_populates="data_entries")
 
-# BẢNG MỚI: Lưu trạng thái nhắc nhở
 class TaskReminder(Base):
     __tablename__ = "task_reminders"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     task_type = Column(String, nullable=False) # "file" hoặc "data"
     task_id = Column(Integer, nullable=False)
     school_id = Column(Integer, ForeignKey("schools.id"))
