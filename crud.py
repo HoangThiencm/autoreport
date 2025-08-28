@@ -17,7 +17,7 @@ import gspread
 import models, schemas
 
 # MODIFIED: ID thư mục gốc mới trên Drive của bạn
-ROOT_DRIVE_FOLDER_ID = "1gCV1_T2j2T6upxfORv4Y4J-j9222m3kE" # ID của thư mục PHONGVH-XH_HONAI
+ROOT_DRIVE_FOLDER_ID = "1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L" # ID của thư mục PHONGVH-XH_HONAI
 
 SERVER_SCOPES = [
     'https://www.googleapis.com/auth/drive',
