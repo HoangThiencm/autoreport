@@ -52,3 +52,5 @@ Bước 2: Ứng dụng mở trang Google Sheet trên trình duyệt Chrome/Cố
 Bước 3: Sau khi nhập liệu xong, họ quay lại ứng dụng và nhấn nút "Đánh dấu là đã hoàn thành".
 
 Cách làm này vừa tận dụng được sức mạnh của Google Sheets, vừa đảm bảo ứng dụng của chúng ta chạy ổn định và an toàn.
+
+C:\Users\HoangThien\.auto_report_client tìm token.json

@@ -8,10 +8,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-# --- BẮT ĐẦU PHẦN CẬP NHẬT SCHEDULER ---
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.executors.pool import ThreadPoolExecutor
-# --- KẾT THÚC PHẦN CẬP NHẬT SCHEDULER ---
 
 import models, schemas, crud
 from database import engine, SessionLocal
@@ -38,9 +36,9 @@ def get_school_from_api_key(x_api_key: str = Header(...), db: Session = Depends(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API Key không hợp lệ.")
     return db_school
 
-# --- Scheduler (ĐÃ CẬP NHẬT CẤU HÌNH) ---
+# --- Scheduler ---
 executors = {
-    'default': ThreadPoolExecutor(1)  # Chỉ cần 1 luồng cho tác vụ đơn giản này
+    'default': ThreadPoolExecutor(1)
 }
 scheduler = BackgroundScheduler(executors=executors, timezone="Asia/Ho_Chi_Minh")
 
@@ -52,10 +50,10 @@ def start_scheduler():
         hours=1,
         id="deadline_check_job",
         replace_existing=True,
-        misfire_grace_time=60  # Cho phép trễ 60 giây nếu server bị treo tạm thời
+        misfire_grace_time=60
     )
     scheduler.start()
-    print("Đã khởi động bộ đếm giờ (Scheduler) với cấu hình mới.")
+    print("Đã khởi động bộ đếm giờ (Scheduler).")
 
 
 @app.on_event("shutdown")
@@ -122,14 +120,20 @@ def delete_school_by_id(school_id: int, db: Session = Depends(get_db)):
 def create_new_file_task(task: schemas.FileTaskCreate, db: Session = Depends(get_db)):
     return crud.create_file_task(db=db, task=task)
 
+# MODIFIED: user_email is now optional
 @app.get("/file-tasks/{task_id}/upload-folder")
 def get_upload_folder_for_task(
     task_id: int,
-    user_email: str,
+    user_email: Optional[str] = None, # MODIFIED
     db: Session = Depends(get_db),
     current_school: models.School = Depends(get_school_from_api_key)
 ):
-    folder_id = crud.get_or_create_file_submission_folder(db, task_id=task_id, school_id=current_school.id, user_email=user_email)
+    folder_id = crud.get_or_create_file_submission_folder(
+        db, 
+        task_id=task_id, 
+        school_id=current_school.id, 
+        user_email=user_email # Pass it to crud
+    )
     if not folder_id:
         raise HTTPException(status_code=404, detail="Không thể tìm hoặc tạo thư mục nộp bài. Vui lòng kiểm tra lại thông tin Năm học của yêu cầu này.")
     return {"folder_id": folder_id}
@@ -154,7 +158,6 @@ def read_file_tasks(
         submitted_task_ids = crud.get_submitted_file_task_ids_for_school(db, school_id=current_school_id)
     
     for task in tasks_from_db:
-        # Create a dictionary from the ORM object
         task_dict = {c.name: getattr(task, c.name) for c in task.__table__.columns}
         task_dict['is_submitted'] = task.id in submitted_task_ids
         task_dict['is_reminded'] = task.id in reminded_task_ids

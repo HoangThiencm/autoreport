@@ -16,7 +16,8 @@ import gspread
 
 import models, schemas
 
-ROOT_DRIVE_FOLDER_ID = "1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L"
+# MODIFIED: ID thư mục gốc mới trên Drive của bạn
+ROOT_DRIVE_FOLDER_ID = "1gCV1_T2j2T6upxfORv4Y4J-j9222m3kE" # ID của thư mục PHONGVH-XH_HONAI
 
 SERVER_SCOPES = [
     'https://www.googleapis.com/auth/drive',
@@ -48,15 +49,15 @@ def _share_folder_with_user(service, folder_id: str, user_email: str):
         service.permissions().create(
             fileId=folder_id,
             body=permission,
-            fields='id'
+            fields='id',
+            sendNotificationEmail=False # Không gửi mail thông báo
         ).execute()
         print(f"Successfully shared folder {folder_id} with {user_email}")
         return True
     except HttpError as e:
-        # If permission already exists, it might raise an error. We can often ignore it.
         if e.resp.status == 403:
              print(f"Could not share folder {folder_id} with {user_email}. Maybe permission already exists? Error: {e}")
-             return True # Assume it's okay
+             return True
         print(f"An error occurred while sharing folder: {e}")
         return False
 
@@ -65,14 +66,14 @@ def _get_or_create_folder(service, name: str, parent_id: str):
         folder_name_ascii = unidecode(name)
         query = f"name='{folder_name_ascii}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
         
-        response = service.files().list(q=query, spaces='drive', fields='files(id)').execute()
+        response = service.files().list(q=query, spaces='drive', fields='files(id)', supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
         folders = response.get('files', [])
         
         if folders:
             return folders[0].get('id')
         
         folder_metadata = {'name': folder_name_ascii, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
-        folder = service.files().create(body=folder_metadata, fields='id').execute()
+        folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
         return folder.get('id')
     except HttpError as e:
         return None
@@ -85,9 +86,9 @@ def extract_drive_file_id_from_url(url: str) -> Optional[str]:
 def download_file_from_drive(file_id: str) -> Tuple[Optional[bytes], Optional[str]]:
     try:
         service, _ = _get_google_service('drive', 'v3')
-        file_metadata = service.files().get(fileId=file_id, fields='name').execute()
+        file_metadata = service.files().get(fileId=file_id, fields='name', supportsAllDrives=True).execute()
         file_name = file_metadata.get('name')
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
         file_buffer = io.BytesIO()
         downloader = MediaIoBaseDownload(file_buffer, request)
         done = False
@@ -160,7 +161,8 @@ def delete_school(db: Session, school_id: int):
         db.commit()
     return db_school
 
-def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: int, user_email: str) -> Optional[str]:
+# MODIFIED: user_email is now optional
+def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: int, user_email: Optional[str] = None) -> Optional[str]:
     task = db.query(models.FileTask).options(joinedload(models.FileTask.school_year)).filter(models.FileTask.id == task_id).first()
     school = db.query(models.School).filter(models.School.id == school_id).first()
     if not task or not school or not task.school_year or not task.school_year.drive_folder_id:
@@ -172,7 +174,7 @@ def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: i
     month_name = f"Thang {datetime.now().strftime('%m-%Y')}"
     monthly_folder_id = _get_or_create_folder(drive_service, month_name, school_folder_id)
     
-    # Share the final folder with the user
+    # MODIFIED: Only share if user_email is provided (for old OAuth flow)
     if monthly_folder_id and user_email:
         _share_folder_with_user(drive_service, monthly_folder_id, user_email)
 
@@ -277,10 +279,16 @@ def create_data_report(db: Session, report: schemas.DataReportCreate):
             copy_title = f"{report.title} - {school.name}"
             copied_file = drive_service.files().copy(
                 fileId=template_id, 
-                body={'name': copy_title, 'parents': [school_folder_id]}
+                body={'name': copy_title, 'parents': [school_folder_id]},
+                supportsAllDrives=True
             ).execute()
             file_id = copied_file.get('id')
-            file_metadata = drive_service.files().get(fileId=file_id, fields='webViewLink').execute()
+            
+            # Thêm quyền ghi cho mọi người có link (nếu cần)
+            permission = {'type': 'anyone', 'role': 'writer'}
+            drive_service.permissions().create(fileId=file_id, body=permission, supportsAllDrives=True).execute()
+
+            file_metadata = drive_service.files().get(fileId=file_id, fields='webViewLink', supportsAllDrives=True).execute()
             sheet_url = file_metadata.get('webViewLink')
             new_entry = models.DataEntry(report_id=db_report.id, school_id=school.id, sheet_url=sheet_url)
             db.add(new_entry)
