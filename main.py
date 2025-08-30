@@ -5,7 +5,7 @@ import openpyxl
 import zipfile
 from typing import List, Optional, Any, Dict
 
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -47,6 +47,24 @@ app = FastAPI(
     description="API Backend cho hệ thống quản lý và theo dõi báo cáo."
 )
 
+@app.post("/admin/upload-attachment", response_model=Dict[str, str])
+async def upload_attachment(file: UploadFile = File(...)):
+    """
+    Nhận file từ admin_app, tải lên Google Drive và trả về URL.
+    """
+    if not file:
+        raise HTTPException(status_code=400, detail="Không có file nào được tải lên.")
+    
+    try:
+        file_content = await file.read()
+        file_url = crud.upload_attachment_to_drive(file.filename, file_content)
+        
+        if not file_url:
+            raise HTTPException(status_code=500, detail="Không thể tải file lên Google Drive.")
+            
+        return {"file_url": file_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi server khi xử lý file: {e}")
 # --- Dependency ---
 def get_db():
     db = SessionLocal()
@@ -138,6 +156,7 @@ def create_new_file_task(payload: Dict[str, Any], db: Session = Depends(get_db))
         content=payload["content"],
         deadline=payload["deadline"],
         school_year_id=payload["school_year_id"],
+        attachment_url=payload.get("attachment_url") # <-- THÊM DÒNG NÀY
     )
     target_school_ids = payload.get("target_school_ids", [])
     return crud.create_file_task_with_targets(db=db, task=base_task, target_school_ids=target_school_ids)
@@ -234,7 +253,8 @@ def create_new_data_report(payload: Dict[str, Any], db: Session = Depends(get_db
             deadline=payload["deadline"],
             school_year_id=payload["school_year_id"],
             columns_schema=[schemas.ColumnDefinition(**c) for c in payload["columns_schema"]],
-            template_data=payload.get("template_data")
+            template_data=payload.get("template_data"),
+            attachment_url=payload.get("attachment_url") # <-- THÊM DÒNG NÀY
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Dữ liệu không hợp lệ: {e}")

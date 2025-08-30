@@ -13,15 +13,15 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QFileDialog, QInputDialog, QDialog,
     QDialogButtonBox, QCheckBox, QAbstractItemView, QToolBar, QTreeWidget, QTreeWidgetItem
 )
-from PySide6.QtCore import QDateTime, Qt, QDate, QUrl, QTimeZone, QByteArray, QUrlQuery
+from PySide6.QtCore import QDateTime, Qt, QDate, QUrl, QTimeZone, QByteArray, QUrlQuery, QFile, QIODevice
 from PySide6.QtGui import QIcon, QColor, QFont, QPixmap, QPainter, QAction
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply, QHttpMultiPart, QHttpPart 
 
 import clipboard
 from spreadsheet_widget import SpreadsheetWidget, ColumnSpec
 
-https://auto-report-backend.onrender.com
+API_URL = "https://auto-report-backend.onrender.com"
 
 def handle_api_error(self, status_code, response_text, context_message):
     detail = response_text
@@ -572,6 +572,38 @@ class AdminWindow(QMainWindow):
             reply.deleteLater()
         reply.finished.connect(handle_download_reply)
 
+    def api_upload_file(self, endpoint: str, file_path: str, on_success: Callable, on_error: Callable):
+        """Gửi yêu cầu POST multipart/form-data để tải file lên server."""
+        url = QUrl(f"{API_URL}{endpoint}")
+        req = QNetworkRequest(url)
+
+        multi_part = QHttpMultiPart(QHttpMultiPart.FormDataType)
+        
+        file_part = QHttpPart()
+        file_name = os.path.basename(file_path)
+        try:
+            file_name_ascii = file_name.encode('ascii').decode('utf-8')
+        except UnicodeEncodeError:
+            from unidecode import unidecode
+            file_name_ascii = unidecode(file_name)
+
+        file_part.setHeader(QNetworkRequest.ContentDispositionHeader, f'form-data; name="file"; filename="{file_name_ascii}"')
+        
+        file_device = QFile(file_path)
+        if not file_device.open(QIODevice.ReadOnly):
+            on_error(0, "Không thể mở file để đọc.")
+            return
+            
+        file_part.setBodyDevice(file_device)
+        file_device.setParent(multi_part)
+        
+        multi_part.append(file_part)
+        
+        reply = self.network_manager.post(req, multi_part)
+        multi_part.setParent(reply)
+        
+        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+
     def load_all_initial_data(self): 
         self.load_dashboard_stats()
         self.load_school_years()
@@ -762,83 +794,27 @@ class AdminWindow(QMainWindow):
         
         self.add_school_button.clicked.connect(self.add_new_school)
     
-    def create_file_tasks_tab(self):
-        layout = QVBoxLayout(self.file_tasks_tab)
-        back_button = QPushButton("⬅️ Quay lại")
-        back_button.clicked.connect(lambda: self.stacked_widget.setCurrentWidget(self.dashboard_tab))
-        layout.addWidget(back_button, alignment=Qt.AlignLeft)
+    def select_ft_attachment(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Chọn file đính kèm")
+        if not file_path:
+            return
 
-        main_splitter = QHBoxLayout()
-        layout.addLayout(main_splitter)
-
-        form_card = QFrame()
-        form_card.setObjectName("card")
-        main_splitter.addWidget(form_card, 2) 
-        grid = QGridLayout(form_card)
-
-        grid.addWidget(QLabel("<b>Tạo Yêu cầu Nộp File Mới</b>"), 0, 0, 1, 2)
-
-        grid.addWidget(QLabel("Năm học:"), 1, 0)
-        self.ft_school_year_selector = QComboBox()
-        grid.addWidget(self.ft_school_year_selector, 1, 1)
-
-        grid.addWidget(QLabel("Tiêu đề:"), 2, 0)
-        self.ft_title_input = QLineEdit()
-        grid.addWidget(self.ft_title_input, 2, 1)
-
-        grid.addWidget(QLabel("Nội dung:"), 3, 0, alignment=Qt.AlignTop)
-        self.ft_content_input = QTextEdit()
-        grid.addWidget(self.ft_content_input, 3, 1)
-
-        grid.addWidget(QLabel("Hạn nộp:"), 4, 0)
-        self.ft_deadline_input = QDateTimeEdit(QDateTime.currentDateTime().addDays(7))
-        self.ft_deadline_input.setCalendarPopup(True)
-        self.ft_deadline_input.setDisplayFormat("HH:mm dd/MM/yyyy")
-        grid.addWidget(self.ft_deadline_input, 4, 1)
+        self.ft_attachment_label.setText("Đang tải lên...")
         
-        grid.addWidget(QLabel("Phát hành cho:"), 5, 0)
-        ft_scope_row = QHBoxLayout()
-        grid.addLayout(ft_scope_row, 5, 1)
+        def on_success(data, headers):
+            self.ft_attachment_url = data.get("file_url")
+            file_name = os.path.basename(file_path)
+            self.ft_attachment_label.setText(f"Đã đính kèm: {file_name}")
+            self.ft_attachment_label.setStyleSheet("font-style: normal; color: green;")
+            QMessageBox.information(self, "Thành công", "Đã tải file đính kèm lên thành công.")
 
-        self.ft_scope_selector = QComboBox()
-        self.ft_scope_selector.addItems(["Tất cả trường", "Theo nhóm", "Chọn trường"])
-        ft_scope_row.addWidget(self.ft_scope_selector)
+        def on_error(s, e):
+            self.ft_attachment_label.setText("Lỗi tải lên.")
+            self.ft_attachment_label.setStyleSheet("font-style: italic; color: red;")
+            handle_api_error(self, s, e, "Không thể tải file lên.")
 
-        self.ft_group_selector = QComboBox()
-        self.ft_group_selector.setVisible(False)
-        ft_scope_row.addWidget(self.ft_group_selector)
-
-        self.ft_pick_schools_btn = QPushButton("Chọn...")
-        self.ft_pick_schools_btn.setVisible(False)
-        ft_scope_row.addWidget(self.ft_pick_schools_btn)
-
-        self.ft_scope_selector.currentIndexChanged.connect(self._on_ft_scope_change)
-        self.ft_pick_schools_btn.clicked.connect(self._ft_pick_schools_dialog)
-
-        self.add_ft_button = QPushButton("Phát hành Yêu cầu")
-        self.add_ft_button.setStyleSheet("background-color:#2ecc71;")
-        self.add_ft_button.clicked.connect(self.add_new_file_task)
-        grid.addWidget(self.add_ft_button, 6, 1, alignment=Qt.AlignRight)
-
-        list_card = QFrame()
-        list_card.setObjectName("card")
-        main_splitter.addWidget(list_card, 3) 
-        list_layout = QVBoxLayout(list_card)
-
-        list_layout.addWidget(QLabel("<b>Danh sách Yêu cầu đã Phát hành</b>"))
-        
-        filter_layout = QHBoxLayout()
-        filter_layout.addWidget(QLabel("Lọc theo năm học:"))
-        self.ft_filter_sy_selector = QComboBox()
-        self.ft_filter_sy_selector.addItem("Tất cả", userData=None)
-        self.ft_filter_sy_selector.currentIndexChanged.connect(self.load_file_tasks)
-        filter_layout.addWidget(self.ft_filter_sy_selector)
-        filter_layout.addStretch()
-        list_layout.addLayout(filter_layout)
-        
-        self.file_tasks_list_widget = QListWidget()
-        list_layout.addWidget(self.file_tasks_list_widget)
-
+        self.api_upload_file("/admin/upload-attachment", file_path, on_success, on_error)
+       
     def create_data_reports_tab(self):
         layout = QVBoxLayout(self.data_reports_tab)
         back_button = QPushButton("⬅️ Quay lại")
@@ -876,9 +852,22 @@ class AdminWindow(QMainWindow):
         self.dr_deadline_input.setDisplayFormat("HH:mm dd/MM/yyyy")
         design_layout.addWidget(self.dr_deadline_input, 5, 1)
 
-        design_layout.addWidget(QLabel("Phát hành cho:"), 6, 0)
+        # === PHẦN ĐƯỢC THÊM VÀO ===
+        design_layout.addWidget(QLabel("File đính kèm:"), 6, 0)
+        dr_attachment_layout = QHBoxLayout()
+        self.dr_attachment_label = QLabel("Chưa có file.")
+        self.dr_attachment_label.setStyleSheet("font-style: italic; color: #888;")
+        dr_attachment_button = QPushButton("Chọn File...")
+        dr_attachment_button.clicked.connect(self.select_dr_attachment)
+        dr_attachment_layout.addWidget(self.dr_attachment_label, 1)
+        dr_attachment_layout.addWidget(dr_attachment_button)
+        design_layout.addLayout(dr_attachment_layout, 6, 1)
+        self.dr_attachment_url = None
+        # === KẾT THÚC PHẦN THÊM VÀO ===
+
+        design_layout.addWidget(QLabel("Phát hành cho:"), 7, 0)
         scope_row = QHBoxLayout()
-        design_layout.addLayout(scope_row, 6, 1)
+        design_layout.addLayout(scope_row, 7, 1)
 
         self.scope_selector = QComboBox()
         self.scope_selector.addItems(["Tất cả trường", "Theo nhóm", "Chọn trường"])
@@ -897,7 +886,7 @@ class AdminWindow(QMainWindow):
 
         self.add_dr_button = QPushButton("Ban hành Báo cáo")
         self.add_dr_button.clicked.connect(self.add_new_data_report)
-        design_layout.addWidget(self.add_dr_button, 7, 1, alignment=Qt.AlignRight)
+        design_layout.addWidget(self.add_dr_button, 8, 1, alignment=Qt.AlignRight)
         
         list_card = QFrame()
         list_card.setObjectName("card")
@@ -906,6 +895,27 @@ class AdminWindow(QMainWindow):
         list_layout.addWidget(QLabel("<b>Danh sách đã ban hành</b>"))
         self.data_reports_list_widget = QListWidget()
         list_layout.addWidget(self.data_reports_list_widget)
+
+    def select_dr_attachment(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Chọn file đính kèm cho báo cáo")
+        if not file_path:
+            return
+
+        self.dr_attachment_label.setText("Đang tải lên...")
+        
+        def on_success(data, headers):
+            self.dr_attachment_url = data.get("file_url")
+            file_name = os.path.basename(file_path)
+            self.dr_attachment_label.setText(f"Đã đính kèm: {file_name}")
+            self.dr_attachment_label.setStyleSheet("font-style: normal; color: green;")
+            QMessageBox.information(self, "Thành công", "Đã tải file đính kèm lên thành công.")
+
+        def on_error(s, e):
+            self.dr_attachment_label.setText("Lỗi tải lên.")
+            self.dr_attachment_label.setStyleSheet("font-style: italic; color: red;")
+            handle_api_error(self, s, e, "Không thể tải file lên.")
+
+        self.api_upload_file("/admin/upload-attachment", file_path, on_success, on_error)
         
     def create_report_tab(self):
         layout = QVBoxLayout(self.report_tab)
@@ -1129,6 +1139,7 @@ class AdminWindow(QMainWindow):
             "deadline": self.ft_deadline_input.dateTime().toString("yyyy-MM-dd'T'HH:mm:ss"),
             "school_year_id": school_year_id,
             "target_school_ids": target_school_ids,
+            "attachment_url": self.ft_attachment_url
         }
 
         def on_success(d, h):
@@ -1136,6 +1147,9 @@ class AdminWindow(QMainWindow):
             self.ft_title_input.clear()
             self.ft_content_input.clear()
             self._ft_custom_selected_school_ids.clear()
+            self.ft_attachment_url = None
+            self.ft_attachment_label.setText("Chưa có file.")
+            self.ft_attachment_label.setStyleSheet("font-style: italic; color: #888;")
             self.load_file_tasks()
             self.add_ft_button.setDisabled(False)
             self.add_ft_button.setText("Phát hành Yêu cầu")
@@ -1146,7 +1160,7 @@ class AdminWindow(QMainWindow):
             self.add_ft_button.setText("Phát hành Yêu cầu")
 
         self.api_post("/file-tasks/", payload, on_success, on_error)
-
+        
     def load_file_tasks(self):
         params = {}
         school_year_id = self.ft_filter_sy_selector.currentData()
@@ -1196,6 +1210,7 @@ class AdminWindow(QMainWindow):
             "columns_schema": self.current_report_schema,
             "template_data": self.current_report_data,
             "target_school_ids": target_school_ids,
+            "attachment_url": self.dr_attachment_url  # <-- DÒNG QUAN TRỌNG ĐƯỢC THÊM VÀO
         }
 
         self.add_dr_button.setDisabled(True)
@@ -1206,6 +1221,11 @@ class AdminWindow(QMainWindow):
             self.current_report_schema = []
             self.current_report_data = []
             self._custom_selected_school_ids = set()
+            # Reset lại trạng thái attachment
+            self.dr_attachment_url = None
+            self.dr_attachment_label.setText("Chưa có file.")
+            self.dr_attachment_label.setStyleSheet("font-style: italic; color: #888;")
+            
             self.dr_design_status_label.setText("Trạng thái thiết kế: Chưa có.")
             self.dr_design_status_label.setStyleSheet("font-style: italic; color: #6c757d;")
             self.load_data_reports()
@@ -1216,7 +1236,7 @@ class AdminWindow(QMainWindow):
             self.add_dr_button.setDisabled(False)
             self.add_dr_button.setText("Ban hành Báo cáo")
         self.api_post("/data-reports/", payload, on_success, on_error)
-        
+       
     def load_data_reports(self):
         def on_success(data, headers):
             self.data_reports_list_widget.clear()

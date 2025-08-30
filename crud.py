@@ -12,12 +12,13 @@ from sqlalchemy.exc import IntegrityError
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 import models, schemas
 
 # MODIFIED: ID thư mục gốc mới trên Drive của bạn
 ROOT_DRIVE_FOLDER_ID = "0AB0xC4mVFuxMUk9PVA" # ID của thư mục PHONGVH-XH_HONAI
+SHARED_ATTACHMENTS_FOLDER_NAME = "_Attachments_Shared"
 
 SERVER_SCOPES = [
     'https://www.googleapis.com/auth/drive',
@@ -75,6 +76,34 @@ def _get_or_create_folder(service, name: str, parent_id: str):
         folder = service.files().create(body=folder_metadata, fields='id', supportsAllDrives=True).execute()
         return folder.get('id')
     except HttpError as e:
+        return None
+
+def upload_attachment_to_drive(file_name: str, file_content: bytes) -> Optional[str]:
+    """
+    Tải file đính kèm lên một thư mục chia sẻ chung và trả về link có thể xem.
+    """
+    try:
+        service, _ = _get_google_service('drive', 'v3')
+        # Tạo một thư mục chung để chứa tất cả file đính kèm cho gọn
+        shared_folder_id = _get_or_create_folder(service, SHARED_ATTACHMENTS_FOLDER_NAME, ROOT_DRIVE_FOLDER_ID)
+        if not shared_folder_id:
+            print("Lỗi: Không thể tạo thư mục cho file đính kèm.")
+            return None
+
+        file_metadata = {'name': file_name, 'parents': [shared_folder_id]}
+        media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype='application/octet-stream', resumable=True)
+        
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink', supportsAllDrives=True).execute()
+        
+        # Cấp quyền cho mọi người có link đều xem được
+        file_id = file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission, supportsAllDrives=True).execute()
+        print(f"Đã tải và chia sẻ file: {file.get('webViewLink')}")
+        
+        return file.get('webViewLink')
+    except HttpError as e:
+        print(f"Lỗi khi tải file đính kèm lên Drive: {e}")
         return None
 
 def _rename_drive_folder(service, folder_id: str, new_name: str):
@@ -329,7 +358,8 @@ def create_data_report(db: Session, report: schemas.DataReportCreate,
         deadline=report.deadline,
         school_year_id=report.school_year_id,
         columns_schema=[col.dict() for col in report.columns_schema],
-        template_data=report.template_data
+        template_data=report.template_data,
+        attachment_url=report.attachment_url # <-- THÊM DÒNG NÀY
     )
     db.add(db_report)
     db.commit()
@@ -543,6 +573,7 @@ def create_file_task_with_targets(
     task: schemas.FileTaskCreate,
     target_school_ids: Optional[List[int]] = None
 ):
+    # Dòng task.dict() sẽ tự động lấy cả 'attachment_url' từ schema
     db_task = models.FileTask(**task.dict())
     db.add(db_task)
     db.commit()

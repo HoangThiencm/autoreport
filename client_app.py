@@ -27,7 +27,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 
 from spreadsheet_widget import SpreadsheetWidget, ColumnSpec
 
-https://auto-report-backend.onrender.com
+API_URL = "https://auto-report-backend.onrender.com"
 
 def get_app_data_path(filename):
     app_data_dir = os.path.join(os.path.expanduser('~'), '.auto_report_client')
@@ -96,7 +96,7 @@ class UploadWorker(QObject):
         except Exception as e: self.error.emit(str(e))
 
 class ListItemWidget(QWidget):
-    def __init__(self, item_id, title, deadline, is_submitted, is_reminded, is_locked, parent=None):
+    def __init__(self, item_id, title, deadline, attachment_url, is_submitted, is_reminded, is_locked, parent=None):
         super().__init__(parent)
         self.item_id = item_id
         layout = QHBoxLayout(self)
@@ -106,12 +106,11 @@ class ListItemWidget(QWidget):
         status_text = "Đã hoàn thành" if is_submitted else "Chưa thực hiện"
         status_color = '#27ae60' if is_submitted else '#e74c3c'
         
-        # Sửa đổi để hiển thị trạng thái đã khóa
         if is_locked and not is_submitted:
             title_text = f"<b>ID {item_id}: {title} (Đã khóa)</b>"
             status_text = "Đã khóa"
-            status_color = '#7f8c8d' # Màu xám
-            self.setStyleSheet("background-color: #f2f2f2;") # Nền xám
+            status_color = '#7f8c8d'
+            self.setStyleSheet("background-color: #f2f2f2;")
         elif is_reminded and not is_submitted:
             self.setStyleSheet("background-color: #fff3cd;")
             title_text = f"<b>ID {item_id}: {title} (Cần chú ý!)</b>"
@@ -124,9 +123,20 @@ class ListItemWidget(QWidget):
         status_label = QLabel(status_text)
         status_label.setStyleSheet(f"color: {status_color}; font-weight: bold;")
         
-        layout.addLayout(info_layout, 1)
-        layout.addWidget(status_label, alignment=Qt.AlignCenter)
+        action_widget = QWidget()
+        action_layout = QVBoxLayout(action_widget)
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.addWidget(status_label, alignment=Qt.AlignCenter)
+        
+        if attachment_url:
+            btn = QPushButton("Tải File Kèm Theo")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _, url=attachment_url: webbrowser.open(url))
+            action_layout.addWidget(btn)
 
+        layout.addLayout(info_layout, 1)
+        layout.addWidget(action_widget)
+        
 class ClientWindow(QMainWindow):
     authentication_successful = Signal(str)
     upload_complete_signal = Signal(int, str)
@@ -234,10 +244,14 @@ class ClientWindow(QMainWindow):
         main_layout.addWidget(self.spreadsheet_container, 1)
 
     def create_tasks_table(self):
-        table = QTableWidget(); table.setColumnCount(3); table.setHorizontalHeaderLabels(["Tiêu đề", "Hạn chót", "Trạng thái"])
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch); table.setEditTriggers(QTableWidget.NoEditTriggers); table.setSelectionBehavior(QTableWidget.SelectRows)
+        table = QTableWidget()
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Tiêu đề", "Hạn chót", "Trạng thái", "Hành động"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
         return table
-        
+       
     def on_table_selection_changed(self):
         sender = self.sender()
         if not sender or not sender.selectedItems(): return
@@ -282,14 +296,22 @@ class ClientWindow(QMainWindow):
                 row = table.rowCount(); table.insertRow(row)
                 table.setItem(row, 0, title_item); table.setItem(row, 1, deadline_item); table.setItem(row, 2, status_item)
 
+                attachment_url = task.get("attachment_url")
+                if attachment_url:
+                    btn = QPushButton("Tải File Kèm Theo")
+                    btn.setCursor(Qt.PointingHandCursor)
+                    btn.clicked.connect(lambda _, url=attachment_url: webbrowser.open(url))
+                    table.setCellWidget(row, 3, btn)
+
                 if bg_color:
                     for col in range(table.columnCount()):
-                        table.item(row, col).setBackground(bg_color)
+                        if table.item(row, col):
+                            table.item(row, col).setBackground(bg_color)
 
             self.load_ft_button.setDisabled(False); self.load_ft_button.setText("Làm mới danh sách")
         def on_error(s, e): handle_api_error(self, s, e, "Không thể tải công việc."); self.load_ft_button.setDisabled(False); self.load_ft_button.setText("Làm mới")
         self.api_get("/file-tasks/", on_success, on_error, headers={"x-api-key": self.api_key})
-
+        
     def submit_file_handler(self):
         selected_table = self.ft_todo_table if self.ft_todo_table.selectedItems() else self.ft_overdue_table
         if not selected_table.selectedItems(): 
@@ -357,6 +379,7 @@ class ClientWindow(QMainWindow):
                     report['id'], 
                     report['title'], 
                     deadline_str, 
+                    report.get('attachment_url'),
                     report.get('is_submitted', False), 
                     report.get('is_reminded', False),
                     report.get('is_locked', False)
