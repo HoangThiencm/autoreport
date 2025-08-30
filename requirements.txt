@@ -1,11 +1,12 @@
 fastapi
 uvicorn
 SQLAlchemy
-APScheduler
+psycopg2-binary
+python-dotenv
+apscheduler
 google-api-python-client
 google-auth-oauthlib
 gspread
-python-dotenv
-unidecode
-psycopg2-binary
 openpyxl
+unidecode
+python-multipart
