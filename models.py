@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Date
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Date, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
@@ -36,6 +36,7 @@ class FileTask(Base):
     deadline = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_notification_sent = Column(Boolean, default=False)
+    is_locked = Column(Boolean, default=False, nullable=False)
     
     school_year_id = Column(Integer, ForeignKey("school_years.id"))
     school_year = relationship("SchoolYear")
@@ -59,22 +60,28 @@ class DataReport(Base):
     title = Column(String, index=True, nullable=False)
     deadline = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    template_url = Column(String, nullable=False)
     is_notification_sent = Column(Boolean, default=False)
+    is_locked = Column(Boolean, default=False, nullable=False)
+    
+    columns_schema = Column(JSON, nullable=False) 
+    template_data = Column(JSON, nullable=True) # <-- THÊM DÒNG NÀY
     
     school_year_id = Column(Integer, ForeignKey("school_years.id"))
     school_year = relationship("SchoolYear")
     
-    entries = relationship("DataEntry", back_populates="report")
-
+    entries = relationship("DataEntry", back_populates="report", cascade="all, delete-orphan")
+    
 class DataEntry(Base):
     __tablename__ = "data_entries"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     report_id = Column(Integer, ForeignKey("data_reports.id"))
     school_id = Column(Integer, ForeignKey("schools.id"))
     
-    sheet_url = Column(String, nullable=False)
+    # MODIFIED: Bỏ sheet_url, thêm data để lưu dữ liệu JSON từ bảng
+    data = Column(JSON, nullable=True)
     submitted_at = Column(DateTime, nullable=True) 
+    last_edited_by = Column(String, nullable=True)
+    last_edited_at = Column(DateTime, nullable=True)
     
     report = relationship("DataReport", back_populates="entries")
     school = relationship("School", back_populates="data_entries")

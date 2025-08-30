@@ -1,10 +1,11 @@
 # crud.py
+# ... (giữ nguyên các hàm từ đầu file đến trước hàm update_school_year)
 import os.path
 import re
 import io
 from sqlalchemy.orm import Session, joinedload
 from unidecode import unidecode
-from typing import Optional, Set, List, Tuple
+from typing import Optional, Set, List, Tuple, Dict, Any
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
@@ -12,17 +13,15 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
-import gspread
 
 import models, schemas
 
 # MODIFIED: ID thư mục gốc mới trên Drive của bạn
-ROOT_DRIVE_FOLDER_ID = "1htQOiPyDqkrQxtEEQfHOoJizz9rzQr-L" # ID của thư mục PHONGVH-XH_HONAI
+ROOT_DRIVE_FOLDER_ID = "0AB0xC4mVFuxMUk9PVA" # ID của thư mục PHONGVH-XH_HONAI
 
 SERVER_SCOPES = [
     'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/gmail.send',
-    'https://www.googleapis.com/auth/spreadsheets'
+    'https://www.googleapis.com/auth/gmail.send'
 ]
 
 SERVICE_ACCOUNT_FILE = 'service_account.json'
@@ -50,7 +49,7 @@ def _share_folder_with_user(service, folder_id: str, user_email: str):
             fileId=folder_id,
             body=permission,
             fields='id',
-            sendNotificationEmail=False # Không gửi mail thông báo
+            sendNotificationEmail=False
         ).execute()
         print(f"Successfully shared folder {folder_id} with {user_email}")
         return True
@@ -77,6 +76,25 @@ def _get_or_create_folder(service, name: str, parent_id: str):
         return folder.get('id')
     except HttpError as e:
         return None
+
+def _rename_drive_folder(service, folder_id: str, new_name: str):
+    """
+    HÀM MỚI: Đổi tên một thư mục trên Google Drive.
+    """
+    try:
+        new_name_ascii = unidecode(new_name)
+        file_metadata = {'name': new_name_ascii}
+        service.files().update(
+            fileId=folder_id,
+            body=file_metadata,
+            supportsAllDrives=True,
+            fields='id'
+        ).execute()
+        print(f"Successfully renamed folder {folder_id} to '{new_name_ascii}'")
+        return True
+    except HttpError as e:
+        print(f"An error occurred while renaming folder: {e}")
+        return False
 
 def extract_drive_file_id_from_url(url: str) -> Optional[str]:
     match = re.search(r'/d/([a-zA-Z0-9_-]+)', url)
@@ -131,15 +149,33 @@ def delete_school_year(db: Session, school_year_id: int):
     return db_school_year
 
 def update_school_year(db: Session, school_year_id: int, school_year_update: schemas.SchoolYearUpdate):
+    """
+    SỬA ĐỔI: Thêm logic đổi tên thư mục trên Google Drive khi tên năm học thay đổi.
+    """
     db_school_year = db.query(models.SchoolYear).filter(models.SchoolYear.id == school_year_id).first()
     if db_school_year:
         update_data = school_year_update.dict(exclude_unset=True)
+        
+        # Kiểm tra nếu tên thay đổi thì gọi API đổi tên thư mục Drive
+        if 'name' in update_data and update_data['name'] != db_school_year.name:
+            if db_school_year.drive_folder_id:
+                try:
+                    drive_service, _ = _get_google_service('drive', 'v3')
+                    success = _rename_drive_folder(drive_service, db_school_year.drive_folder_id, update_data['name'])
+                    if not success:
+                        print(f"CẢNH BÁO: Không thể đổi tên thư mục Google Drive cho năm học ID {school_year_id}.")
+                except Exception as e:
+                    print(f"Lỗi kết nối Google Drive API để đổi tên: {e}")
+
+        # Cập nhật các trường trong database
         for key, value in update_data.items():
             setattr(db_school_year, key, value)
         db.commit()
         db.refresh(db_school_year)
     return db_school_year
 
+# ... (giữ nguyên các hàm còn lại của file)
+# ...
 def get_schools(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.School).order_by(models.School.name).offset(skip).limit(limit).all()
 
@@ -161,7 +197,6 @@ def delete_school(db: Session, school_id: int):
         db.commit()
     return db_school
 
-# MODIFIED: user_email is now optional
 def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: int, user_email: Optional[str] = None) -> Optional[str]:
     task = db.query(models.FileTask).options(joinedload(models.FileTask.school_year)).filter(models.FileTask.id == task_id).first()
     school = db.query(models.School).filter(models.School.id == school_id).first()
@@ -174,27 +209,45 @@ def get_or_create_file_submission_folder(db: Session, task_id: int, school_id: i
     month_name = f"Thang {datetime.now().strftime('%m-%Y')}"
     monthly_folder_id = _get_or_create_folder(drive_service, month_name, school_folder_id)
     
-    # MODIFIED: Only share if user_email is provided (for old OAuth flow)
     if monthly_folder_id and user_email:
         _share_folder_with_user(drive_service, monthly_folder_id, user_email)
 
     return monthly_folder_id
 
-def get_file_tasks(db: Session, school_year_id: Optional[int] = None, current_school_id: Optional[int] = None, skip: int = 0, limit: int = 100):
-    query = db.query(models.FileTask)
+def get_file_tasks(
+    db: Session,
+    school_year_id: Optional[int] = None,
+    current_school_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 100
+):
+    """
+    SỬA ĐỔI: Xóa bộ lọc is_locked để client thấy cả các task đã bị khóa.
+    """
+    tasks_query = db.query(models.FileTask)
     if school_year_id:
-        query = query.filter(models.FileTask.school_year_id == school_year_id)
-    
-    reminded_task_ids = set()
+        tasks_query = tasks_query.filter(models.FileTask.school_year_id == school_year_id)
+
+    tasks = tasks_query.order_by(models.FileTask.deadline.desc()).all()
+
+    reminders_all = db.query(models.TaskReminder.task_id, models.TaskReminder.school_id)\
+                      .filter(models.TaskReminder.task_type == "file").all()
+    assigned_map: dict[int, set[int]] = {}
+    for t_id, s_id in reminders_all:
+        assigned_map.setdefault(t_id, set()).add(s_id)
+
+    reminded_task_ids: set[int] = set()
     if current_school_id:
-        reminders = db.query(models.TaskReminder.task_id).filter(
-            models.TaskReminder.school_id == current_school_id,
-            models.TaskReminder.task_type == "file"
-        ).all()
-        reminded_task_ids = {r.task_id for r in reminders}
+        filtered = []
+        for t in tasks:
+            assignees = assigned_map.get(t.id, set())
+            if not assignees or (current_school_id in assignees):
+                filtered.append(t)
+        tasks = filtered
+        reminded_task_ids = {t_id for (t_id, s_id) in reminders_all if s_id == current_school_id}
 
-    return query.order_by(models.FileTask.deadline.desc()).offset(skip).limit(limit).all(), reminded_task_ids
-
+    tasks = tasks[skip: skip + limit]
+    return tasks, reminded_task_ids
 def create_file_task(db: Session, task: schemas.FileTaskCreate):
     db_task = models.FileTask(**task.dict())
     db.add(db_task)
@@ -212,13 +265,13 @@ def delete_file_task(db: Session, task_id: int):
 def update_file_task(db: Session, task_id: int, task_update: schemas.FileTaskUpdate):
     db_task = db.query(models.FileTask).filter(models.FileTask.id == task_id).first()
     if db_task:
+        # exclude_unset=True đảm bảo chỉ cập nhật các trường được gửi lên
         update_data = task_update.dict(exclude_unset=True)
         for key, value in update_data.items():
             setattr(db_task, key, value)
         db.commit()
         db.refresh(db_task)
     return db_task
-
 def get_file_task_by_id(db: Session, task_id: int):
     return db.query(models.FileTask).filter(models.FileTask.id == task_id).first()
 
@@ -236,17 +289,30 @@ def create_file_submission(db: Session, submission: schemas.FileSubmissionCreate
 
 def get_file_task_status(db: Session, task_id: int):
     task = get_file_task_by_id(db, task_id)
-    if not task: return None
-    all_schools = get_schools(db)
+    if not task:
+        return None
+
+    target_ids = [sid for (sid,) in db.query(models.TaskReminder.school_id)
+                                  .filter(models.TaskReminder.task_type == "file",
+                                          models.TaskReminder.task_id == task_id).all()]
+    if target_ids:
+        eligible_schools = db.query(models.School).filter(models.School.id.in_(target_ids)).all()
+    else:
+        eligible_schools = get_schools(db)
+
     submission_map = {sub.school_id: sub for sub in task.submissions}
     submitted_schools_info = []
     not_submitted_schools = []
-    for school in all_schools:
+    for school in eligible_schools:
         if school.id in submission_map:
             submission = submission_map[school.id]
-            submitted_schools_info.append({"id": school.id, "name": school.name, "file_url": submission.file_url, "submitted_at": submission.submitted_at})
+            submitted_schools_info.append({
+                "id": school.id, "name": school.name,
+                "file_url": submission.file_url, "submitted_at": submission.submitted_at
+            })
         else:
             not_submitted_schools.append(school)
+
     return {"task": task, "submitted_schools": submitted_schools_info, "not_submitted_schools": not_submitted_schools}
 
 def get_submitted_file_task_ids_for_school(db: Session, school_id: int) -> Set[int]:
@@ -256,52 +322,62 @@ def get_submitted_file_task_ids_for_school(db: Session, school_id: int) -> Set[i
 def get_submissions_for_file_task(db: Session, task_id: int) -> List[models.FileSubmission]:
     return db.query(models.FileSubmission).filter(models.FileSubmission.task_id == task_id).all()
 
-def create_data_report(db: Session, report: schemas.DataReportCreate):
-    template_id = extract_drive_file_id_from_url(report.template_url)
-    if not template_id:
-        return None, "URL Google Sheet mẫu không hợp lệ."
-    school_year = db.query(models.SchoolYear).filter(models.SchoolYear.id == report.school_year_id).first()
-    if not school_year or not school_year.drive_folder_id:
-        return None, "Năm học không hợp lệ hoặc chưa có thư mục Drive."
-    db_report = models.DataReport(**report.dict())
+def create_data_report(db: Session, report: schemas.DataReportCreate,
+                       target_school_ids: Optional[List[int]] = None) -> models.DataReport:
+    db_report = models.DataReport(
+        title=report.title,
+        deadline=report.deadline,
+        school_year_id=report.school_year_id,
+        columns_schema=[col.dict() for col in report.columns_schema],
+        template_data=report.template_data
+    )
     db.add(db_report)
     db.commit()
     db.refresh(db_report)
-    try:
-        drive_service, _ = _get_google_service('drive', 'v3')
-        year_folder_id = school_year.drive_folder_id
-        all_schools = get_schools(db)
-        for school in all_schools:
-            school_folder_id = _get_or_create_folder(drive_service, school.name, year_folder_id)
-            if not school_folder_id:
-                print(f"CẢNH BÁO: Không thể tạo thư mục cho trường {school.name} trong năm học.")
-                continue
-            copy_title = f"{report.title} - {school.name}"
-            copied_file = drive_service.files().copy(
-                fileId=template_id, 
-                body={'name': copy_title, 'parents': [school_folder_id]},
-                supportsAllDrives=True
-            ).execute()
-            file_id = copied_file.get('id')
-            
-            # Thêm quyền ghi cho mọi người có link (nếu cần)
-            permission = {'type': 'anyone', 'role': 'writer'}
-            drive_service.permissions().create(fileId=file_id, body=permission, supportsAllDrives=True).execute()
 
-            file_metadata = drive_service.files().get(fileId=file_id, fields='webViewLink', supportsAllDrives=True).execute()
-            sheet_url = file_metadata.get('webViewLink')
-            new_entry = models.DataEntry(report_id=db_report.id, school_id=school.id, sheet_url=sheet_url)
-            db.add(new_entry)
-        db.commit()
-        return db_report, None
-    except HttpError as error:
-        db.rollback()
-        db.delete(db_report)
-        db.commit()
-        return None, f"Lỗi Google API: {error}"
+    if target_school_ids:
+        schools = db.query(models.School).filter(models.School.id.in_(target_school_ids)).all()
+    else:
+        schools = get_schools(db)
+
+    for s in schools:
+        db.add(models.DataEntry(report_id=db_report.id, school_id=s.id, data=report.template_data, submitted_at=None))
+    db.commit()
+    return db_report
+    
+def create_or_update_data_submission(db: Session, report_id: int, school_id: int, submission_data: List[Dict[str, Any]]) -> Optional[models.DataEntry]:
+    entry = db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
+    
+    if not entry:
+        return None
+
+    entry.data = submission_data
+    entry.submitted_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+def get_data_submission_for_school(db: Session, report_id: int, school_id: int) -> Optional[Dict[str, Any]]:
+    entry = db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
+    
+    if not entry:
+        return None
+    
+    return {"data": entry.data or []}
 
 def get_data_reports(db: Session, school_year_id: Optional[int] = None, current_school_id: Optional[int] = None, skip: int = 0, limit: int = 100):
+    """
+    SỬA ĐỔI: Xóa bộ lọc is_locked để client thấy cả các báo cáo đã bị khóa.
+    """
     query = db.query(models.DataReport)
+
+    if current_school_id:
+        # Xóa điều kiện is_locked == False khỏi query
+        query = query.join(models.DataEntry).filter(
+            models.DataEntry.school_id == current_school_id
+        )
+
     if school_year_id:
         query = query.filter(models.DataReport.school_year_id == school_year_id)
     
@@ -313,35 +389,90 @@ def get_data_reports(db: Session, school_year_id: Optional[int] = None, current_
         ).all()
         reminded_report_ids = {r.task_id for r in reminders}
 
-    return query.order_by(models.DataReport.deadline.desc()).offset(skip).limit(limit).all(), reminded_report_ids
-
-def mark_data_report_as_complete(db: Session, report_id: int, school_id: int):
-    entry = db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
-    if entry and not entry.submitted_at:
-        entry.submitted_at = datetime.utcnow()
-        db.commit()
-        db.refresh(entry)
-        return entry
-    return None
-
+    reports = query.order_by(models.DataReport.deadline.desc()).offset(skip).limit(limit).all()
+    
+    return reports, reminded_report_ids
+    
 def get_data_report_status(db: Session, report_id: int):
     report = db.query(models.DataReport).filter(models.DataReport.id == report_id).first()
     if not report: return None
-    all_schools = get_schools(db)
-    entry_map = {entry.school_id: entry for entry in report.entries}
+    entry_map = {e.school_id: e for e in report.entries}
+    target_ids = list(entry_map.keys())
+    if not target_ids:
+        return {"report": report, "submitted_schools": [], "not_submitted_schools": []}
+
+    target_schools = db.query(models.School).filter(models.School.id.in_(target_ids)).all()
     submitted_schools_info = []
     not_submitted_schools = []
-    for school in all_schools:
-        if school.id in entry_map and entry_map[school.id].submitted_at:
-            entry = entry_map[school.id]
-            submitted_schools_info.append({"id": school.id, "name": school.name, "submitted_at": entry.submitted_at})
+    for s in target_schools:
+        e = entry_map.get(s.id)
+        if e and e.submitted_at:
+            submitted_schools_info.append({"id": s.id, "name": s.name, "submitted_at": e.submitted_at})
         else:
-            not_submitted_schools.append(school)
+            not_submitted_schools.append(s)
     return {"report": report, "submitted_schools": submitted_schools_info, "not_submitted_schools": not_submitted_schools}
 
-def get_data_entry_for_school(db: Session, report_id: int, school_id: int):
-    return db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
+def get_dashboard_stats(db: Session) -> schemas.DashboardStats:
+    now = datetime.utcnow()
+    
+    overdue_file_tasks = db.query(models.FileTask).filter(
+        models.FileTask.deadline < now, 
+        models.FileTask.is_locked == False
+    ).count()
 
+    overdue_data_reports = db.query(models.DataReport).filter(
+        models.DataReport.deadline < now, 
+        models.DataReport.is_locked == False
+    ).count()
+    
+    total_schools = db.query(models.School).count()
+    
+    active_year = db.query(models.SchoolYear).filter(models.SchoolYear.is_active == True).first()
+    
+    return schemas.DashboardStats(
+        overdue_file_tasks=overdue_file_tasks,
+        overdue_data_reports=overdue_data_reports,
+        total_schools=total_schools,
+        active_school_year_name=active_year.name if active_year else "Chưa có"
+    )
+
+def update_data_submission_by_admin(db: Session, report_id: int, school_id: int, submission_update: schemas.AdminDataSubmissionUpdate) -> Optional[models.DataEntry]:
+    entry = db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
+    
+    if not entry:
+        return None
+
+    entry.data = submission_update.data
+    if not entry.submitted_at:
+        entry.submitted_at = datetime.utcnow()
+        
+    entry.last_edited_by = "admin"
+    entry.last_edited_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+def get_all_data_submissions_for_report(db: Session, report_id: int) -> List[Dict[str, Any]]:
+    q = (
+        db.query(models.DataEntry)
+        .filter(models.DataEntry.report_id == report_id, models.DataEntry.submitted_at.isnot(None))
+        .all()
+    )
+           
+    results = []
+    for entry in q:
+        if entry.data: 
+            results.extend(entry.data)
+    return results
+ 
+def delete_data_report(db: Session, report_id: int):
+    db_report = db.query(models.DataReport).filter(models.DataReport.id == report_id).first()
+    if db_report:
+        db.delete(db_report)
+        db.commit()
+    return db_report
+    
 def create_reminders_for_task(db: Session, task_type: str, task_id: int):
     not_submitted_schools = []
     if task_type == "file":
@@ -386,3 +517,41 @@ def reset_database(db: Session):
     except Exception as e:
         db.rollback()
         return False, f"Lỗi khi xóa dữ liệu: {e}"
+
+def update_data_report(db: Session, report_id: int, report_update: schemas.DataReportUpdate):
+    db_report = db.query(models.DataReport).filter(models.DataReport.id == report_id).first()
+    if db_report:
+        update_data = report_update.dict(exclude_unset=True)
+        
+        if 'columns_schema' in update_data:
+             db_report.columns_schema = update_data['columns_schema']
+             del update_data['columns_schema']
+
+        if 'template_data' in update_data:
+             db_report.template_data = update_data['template_data']
+             del update_data['template_data']
+
+        for key, value in update_data.items():
+            setattr(db_report, key, value)
+            
+        db.commit()
+        db.refresh(db_report)
+    return db_report
+    
+def create_file_task_with_targets(
+    db: Session,
+    task: schemas.FileTaskCreate,
+    target_school_ids: Optional[List[int]] = None
+):
+    db_task = models.FileTask(**task.dict())
+    db.add(db_task)
+    db.commit()
+    db.refresh(db_task)
+
+    if target_school_ids:
+        for sid in target_school_ids:
+            db.add(models.TaskReminder(task_type="file", task_id=db_task.id, school_id=sid))
+        db.commit()
+
+    return db_task
+
