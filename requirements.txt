@@ -8,3 +8,4 @@ gspread
 python-dotenv
 unidecode
 psycopg2-binary
+openpyxl
