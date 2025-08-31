@@ -37,6 +37,7 @@ class FileTask(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     is_notification_sent = Column(Boolean, default=False)
     is_locked = Column(Boolean, default=False, nullable=False)
+    attachment_url = Column(String, nullable=True)
     
     school_year_id = Column(Integer, ForeignKey("school_years.id"))
     school_year = relationship("SchoolYear")
@@ -62,9 +63,10 @@ class DataReport(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     is_notification_sent = Column(Boolean, default=False)
     is_locked = Column(Boolean, default=False, nullable=False)
+    attachment_url = Column(String, nullable=True)
     
     columns_schema = Column(JSON, nullable=False) 
-    template_data = Column(JSON, nullable=True) # <-- THÊM DÒNG NÀY
+    template_data = Column(JSON, nullable=True)
     
     school_year_id = Column(Integer, ForeignKey("school_years.id"))
     school_year = relationship("SchoolYear")
@@ -77,7 +79,6 @@ class DataEntry(Base):
     report_id = Column(Integer, ForeignKey("data_reports.id"))
     school_id = Column(Integer, ForeignKey("schools.id"))
     
-    # MODIFIED: Bỏ sheet_url, thêm data để lưu dữ liệu JSON từ bảng
     data = Column(JSON, nullable=True)
     submitted_at = Column(DateTime, nullable=True) 
     last_edited_by = Column(String, nullable=True)
@@ -95,3 +96,5 @@ class TaskReminder(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     school = relationship("School", back_populates="reminders")
+
+

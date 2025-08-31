@@ -1,11 +1,9 @@
-# crud.py
-# ... (giữ nguyên các hàm từ đầu file đến trước hàm update_school_year)
 import os.path
 import re
 import io
 from sqlalchemy.orm import Session, joinedload
 from unidecode import unidecode
-from typing import Optional, Set, List, Tuple, Dict, Any
+from typing import Optional, Set, List, Tuple, Dict, Any, Literal
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
@@ -586,3 +584,121 @@ def create_file_task_with_targets(
 
     return db_task
 
+def compute_compliance_summary(
+    db: Session,
+    start: datetime,
+    end: datetime,
+    school_year_id: int | None,
+    kind: Literal["file", "data", "both"] = "both"
+) -> Dict[str, Any]:
+    """
+    Tính cho từng TRƯỜNG trong giai đoạn [start, end]:
+      - assigned_count: số task/báo cáo được giao trong kỳ
+      - ontime_count : số đã nộp và nộp ĐÚNG HẠN
+      - late_count   : số đã nộp nhưng TRỄ HẠN
+      - missing_count: số KHÔNG NỘP
+    Phân nhóm trường:
+      - ontime : assigned_count>0 và missing_count==0 và late_count==0
+      - late   : assigned_count>0 và late_count>0 và missing_count==0
+      - missing: assigned_count>0 và missing_count>0
+    """
+    # Lấy danh sách trường
+    schools = db.query(models.School).all()
+    per_school = {
+        s.id: {"id": s.id, "name": s.name, "assigned": 0, "ontime": 0, "late": 0, "missing": 0}
+        for s in schools
+    }
+
+    def _handle_file_tasks():
+        q = db.query(models.FileTask).filter(
+            models.FileTask.deadline >= start,
+            models.FileTask.deadline <= end # SỬA LỖI: Sử dụng <= thay vì < để bao gồm cả ngày kết thúc
+        )
+        if school_year_id:
+            q = q.filter(models.FileTask.school_year_id == school_year_id)
+        tasks = q.all()
+
+        for t in tasks:
+            # Xác định "được giao" (eligible schools) theo logic hiện có
+            # - nếu có TaskReminder ràng buộc: chỉ các trường đó
+            # - nếu không: tất cả các trường
+            target_ids = [sid for (sid,) in db.query(models.TaskReminder.school_id)
+                          .filter(models.TaskReminder.task_type == "file",
+                                  models.TaskReminder.task_id == t.id).all()]
+            if target_ids:
+                eligible = [s for s in schools if s.id in target_ids]
+            else:
+                eligible = schools
+
+            sub_map = {sub.school_id: sub for sub in t.submissions}
+
+            for s in eligible:
+                per_school[s.id]["assigned"] += 1
+                sub = sub_map.get(s.id)
+                if not sub:
+                    per_school[s.id]["missing"] += 1
+                else:
+                    if sub.submitted_at and sub.submitted_at <= t.deadline:
+                        per_school[s.id]["ontime"] += 1
+                    else:
+                        per_school[s.id]["late"] += 1
+
+    def _handle_data_reports():
+        q = db.query(models.DataReport).filter(
+            models.DataReport.deadline >= start,
+            models.DataReport.deadline <= end # SỬA LỖI: Sử dụng <= thay vì < để bao gồm cả ngày kết thúc
+        )
+        if school_year_id:
+            q = q.filter(models.DataReport.school_year_id == school_year_id)
+        reports = q.all()
+
+        for r in reports:
+            # Target là các School đã có DataEntry được tạo cho report
+            entry_map = {e.school_id: e for e in r.entries}
+            target_ids = list(entry_map.keys())
+            if not target_ids:
+                continue
+            target_schools = [s for s in schools if s.id in target_ids]
+
+            for s in target_schools:
+                per_school[s.id]["assigned"] += 1
+                e = entry_map.get(s.id)
+                if not e or not e.submitted_at:
+                    per_school[s.id]["missing"] += 1
+                else:
+                    if e.submitted_at <= r.deadline:
+                        per_school[s.id]["ontime"] += 1
+                    else:
+                        per_school[s.id]["late"] += 1
+
+    if kind in ("file", "both"):
+        _handle_file_tasks()
+    if kind in ("data", "both"):
+        _handle_data_reports()
+
+    # Gom nhóm
+    ontime, late, missing = [], [], []
+    for s in per_school.values():
+        assigned = s["assigned"]
+        if assigned == 0:
+            continue  # không bị giao gì trong kỳ -> bỏ qua
+        entry = {
+            "id": s["id"], "name": s["name"],
+            "assigned_count": assigned,
+            "ontime_count": s["ontime"],
+            "late_count": s["late"],
+            "missing_count": s["missing"],
+        }
+        if s["missing"] > 0:
+            missing.append(entry)
+        elif s["late"] > 0:
+            late.append(entry)
+        else:
+            ontime.append(entry)
+
+    # Sắp xếp nhẹ theo tên trường
+    ontime.sort(key=lambda x: x["name"])
+    late.sort(key=lambda x: x["name"])
+    missing.sort(key=lambda x: x["name"])
+
+    return {"ontime": ontime, "late": late, "missing": missing}

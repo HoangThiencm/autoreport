@@ -4,8 +4,8 @@ import os
 import openpyxl
 import zipfile
 from typing import List, Optional, Any, Dict
-
-from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File
+from datetime import datetime
+from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -29,10 +29,12 @@ def _init_sqlite_hotfix_columns():
     
     # Bảng file_tasks
     ensure_sqlite_column(_engine, "file_tasks", "is_locked", "BOOLEAN")
+    ensure_sqlite_column(_engine, "file_tasks", "attachment_url", "TEXT")
 
     # Bảng data_reports
     ensure_sqlite_column(_engine, "data_reports", "template_data", "TEXT")
     ensure_sqlite_column(_engine, "data_reports", "is_locked", "BOOLEAN")
+    ensure_sqlite_column(_engine, "data_reports", "attachment_url", "TEXT")
 
     # Bảng data_entries
     ensure_sqlite_column(_engine, "data_entries", "last_edited_by", "VARCHAR")
@@ -148,7 +150,6 @@ def delete_school_by_id(school_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Trường không tồn tại.")
     return {"message": "Đã xóa trường thành công."}
 
-# --- FileTask & FileSubmission Endpoints ---
 @app.post("/file-tasks/", response_model=schemas.FileTask)
 def create_new_file_task(payload: Dict[str, Any], db: Session = Depends(get_db)):
     base_task = schemas.FileTaskCreate(
@@ -156,7 +157,7 @@ def create_new_file_task(payload: Dict[str, Any], db: Session = Depends(get_db))
         content=payload["content"],
         deadline=payload["deadline"],
         school_year_id=payload["school_year_id"],
-        attachment_url=payload.get("attachment_url") # <-- THÊM DÒNG NÀY
+        attachment_url=payload.get("attachment_url")
     )
     target_school_ids = payload.get("target_school_ids", [])
     return crud.create_file_task_with_targets(db=db, task=base_task, target_school_ids=target_school_ids)
@@ -244,7 +245,6 @@ def create_new_file_submission(
 ):
     return crud.create_file_submission(db=db, submission=submission, school_id=current_school.id)
 
-# --- ENDPOINTS CHO BÁO CÁO NHẬP LIỆU ---
 @app.post("/data-reports/", response_model=schemas.DataReport)
 def create_new_data_report(payload: Dict[str, Any], db: Session = Depends(get_db)):
     try:
@@ -254,7 +254,7 @@ def create_new_data_report(payload: Dict[str, Any], db: Session = Depends(get_db
             school_year_id=payload["school_year_id"],
             columns_schema=[schemas.ColumnDefinition(**c) for c in payload["columns_schema"]],
             template_data=payload.get("template_data"),
-            attachment_url=payload.get("attachment_url") # <-- THÊM DÒNG NÀY
+            attachment_url=payload.get("attachment_url")
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Dữ liệu không hợp lệ: {e}")
@@ -288,6 +288,7 @@ def read_data_reports(
             "created_at": report.created_at,
             "columns_schema": report.columns_schema,
             "template_data": report.template_data,
+            "attachment_url": report.attachment_url,
             "is_locked": getattr(report, 'is_locked', False) or False,
             "is_submitted": False,
             "is_reminded": False
@@ -369,6 +370,37 @@ def export_data_report_to_excel(report_id: int, db: Session = Depends(get_db)):
         'Content-Disposition': f'attachment; filename="bao_cao_tong_hop_{report_id}.xlsx"'
     }
     return StreamingResponse(output, headers=response_headers, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.get("/admin/compliance-summary", response_model=schemas.ComplianceSummary)
+def get_compliance_summary(
+    kind: str = Query("both", pattern="^(file|data|both)$"),
+    start: str = Query(..., description="ISO datetime, vd: 2025-08-01T00:00:00"),
+    end: str = Query(..., description="ISO datetime, vd: 2025-08-31T23:59:59"),
+    school_year_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    try:
+        start_dt = datetime.fromisoformat(start)
+        end_dt = datetime.fromisoformat(end)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Tham số thời gian không hợp lệ (ISO 8601).")
+
+    data = crud.compute_compliance_summary(db, start_dt, end_dt, school_year_id, kind)  # <- hàm mới ở crud
+    # Tạo nhãn kỳ hạn hiển thị
+    if school_year_id:
+        sy = db.query(models.SchoolYear).filter(models.SchoolYear.id == school_year_id).first()
+        sy_name = sy.name if sy else f"ID {school_year_id}"
+        period_label = f"{start_dt:%d/%m/%Y} – {end_dt:%d/%m/%Y} · {sy_name}"
+    else:
+        period_label = f"{start_dt:%d/%m/%Y} – {end_dt:%d/%m/%Y}"
+
+    return schemas.ComplianceSummary(
+        period_label=period_label,
+        kind=kind,
+        ontime=[schemas.SchoolComplianceEntry(**x) for x in data["ontime"]],
+        late=[schemas.SchoolComplianceEntry(**x) for x in data["late"]],
+        missing=[schemas.SchoolComplianceEntry(**x) for x in data["missing"]],
+    )
 
 @app.get("/data-reports/{report_id}/submission/{school_id}", response_model=Dict[str, Any])
 def get_submission_for_school_admin(report_id: int, school_id: int, db: Session = Depends(get_db)):

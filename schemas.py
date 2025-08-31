@@ -52,6 +52,7 @@ class FileTaskBase(BaseModel):
     content: str
     deadline: datetime
     school_year_id: int
+    attachment_url: Optional[str] = None
 
 class FileTaskCreate(FileTaskBase):
     pass
@@ -62,6 +63,8 @@ class FileTaskUpdate(BaseModel):
     deadline: Optional[datetime] = None
     school_year_id: Optional[int] = None
     is_locked: Optional[bool] = None
+    attachment_url: Optional[str] = None
+
 class FileTask(FileTaskBase):
     id: int
     created_at: datetime
@@ -99,7 +102,8 @@ class DataReportCreate(BaseModel):
     deadline: datetime
     school_year_id: int
     columns_schema: List[ColumnDefinition]
-    template_data: Optional[List[Dict[str, Any]]] = None # <-- THÊM DÒNG NÀY
+    template_data: Optional[List[Dict[str, Any]]] = None
+    attachment_url: Optional[str] = None
 
 class DataReport(BaseModel):
     id: int
@@ -108,12 +112,13 @@ class DataReport(BaseModel):
     created_at: datetime
     columns_schema: List[ColumnDefinition]
     template_data: Optional[List[Dict[str, Any]]] = None
+    attachment_url: Optional[str] = None
     is_locked: bool
     is_submitted: bool = False
     is_reminded: bool = False
     class Config:
         from_attributes = True
-        
+       
 # Schema để client gửi dữ liệu lên
 class DataSubmissionCreate(BaseModel):
     data: List[Dict[str, Any]]
@@ -132,12 +137,13 @@ class DataReportStatus(BaseModel):
     class Config:
         from_attributes = True
         
-class DataReportUpdate(BaseModel): # SỬA ĐỔI: Thêm template_data là Optional
+class DataReportUpdate(BaseModel):
     title: Optional[str] = None
     deadline: Optional[datetime] = None
     columns_schema: Optional[List[ColumnDefinition]] = None
     template_data: Optional[List[Dict[str, Any]]] = None
     is_locked: Optional[bool] = None
+    attachment_url: Optional[str] = None
     
 class AdminDataSubmissionUpdate(BaseModel): 
     data: List[Dict[str, Any]]
@@ -148,3 +154,22 @@ class DashboardStats(BaseModel):
     total_schools: int
     active_school_year_name: Optional[str] = "Chưa có"
 
+class SchoolComplianceEntry(BaseModel):
+    id: int
+    name: str
+    # các nhiệm vụ/báo cáo được giao trong kỳ
+    assigned_count: int
+    # nộp đúng hạn count (submitted_at <= deadline)
+    ontime_count: int
+    # nộp trễ hạn count (submitted_at > deadline)
+    late_count: int
+    # không nộp count
+    missing_count: int
+
+class ComplianceSummary(BaseModel):
+    period_label: str
+    kind: str  # "file" | "data" | "both"
+    # 3 nhóm theo yêu cầu:
+    ontime: List[SchoolComplianceEntry]
+    late: List[SchoolComplianceEntry]
+    missing: List[SchoolComplianceEntry]
