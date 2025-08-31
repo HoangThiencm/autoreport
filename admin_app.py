@@ -21,7 +21,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 import clipboard
 from spreadsheet_widget import SpreadsheetWidget, ColumnSpec
 
-API_URL = https://auto-report-backend.onrender.com
+API_URL = "https://auto-report-backend.onrender.com"
 
 def handle_api_error(self, status_code, response_text, context_message):
     detail = response_text

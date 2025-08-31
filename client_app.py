@@ -27,7 +27,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkRe
 
 from spreadsheet_widget import SpreadsheetWidget, ColumnSpec
 
-API_URL = https://auto-report-backend.onrender.com
+API_URL = "https://auto-report-backend.onrender.com"
 
 def get_app_data_path(filename):
     app_data_dir = os.path.join(os.path.expanduser('~'), '.auto_report_client')
