@@ -99,6 +99,7 @@ class ColumnDefinition(BaseModel):
 
 class DataReportCreate(BaseModel):
     title: str
+    description: Optional[str] = None
     deadline: datetime
     school_year_id: int
     columns_schema: List[ColumnDefinition]
@@ -108,6 +109,7 @@ class DataReportCreate(BaseModel):
 class DataReport(BaseModel):
     id: int
     title: str
+    description: Optional[str] = None
     deadline: datetime
     created_at: datetime
     columns_schema: List[ColumnDefinition]
@@ -139,6 +141,7 @@ class DataReportStatus(BaseModel):
         
 class DataReportUpdate(BaseModel):
     title: Optional[str] = None
+    description: Optional[str] = None
     deadline: Optional[datetime] = None
     columns_schema: Optional[List[ColumnDefinition]] = None
     template_data: Optional[List[Dict[str, Any]]] = None

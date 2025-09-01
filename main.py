@@ -17,6 +17,8 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 import models, schemas, crud
 from database import engine, SessionLocal
 from scheduler import check_deadlines_and_send_email
+from io import BytesIO
+from openpyxl.utils import get_column_letter
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -35,6 +37,7 @@ def _init_sqlite_hotfix_columns():
     ensure_sqlite_column(_engine, "data_reports", "template_data", "TEXT")
     ensure_sqlite_column(_engine, "data_reports", "is_locked", "BOOLEAN")
     ensure_sqlite_column(_engine, "data_reports", "attachment_url", "TEXT")
+    ensure_sqlite_column(_engine, "data_reports", "description", "TEXT")
 
     # Bảng data_entries
     ensure_sqlite_column(_engine, "data_entries", "last_edited_by", "VARCHAR")
@@ -250,6 +253,7 @@ def create_new_data_report(payload: Dict[str, Any], db: Session = Depends(get_db
     try:
         base = schemas.DataReportCreate(
             title=payload["title"],
+            description=payload.get("description"),
             deadline=payload["deadline"],
             school_year_id=payload["school_year_id"],
             columns_schema=[schemas.ColumnDefinition(**c) for c in payload["columns_schema"]],
@@ -284,6 +288,7 @@ def read_data_reports(
         report_dict = {
             "id": report.id,
             "title": report.title,
+            "description": getattr(report, 'description', None),
             "deadline": report.deadline,
             "created_at": report.created_at,
             "columns_schema": report.columns_schema,
@@ -299,17 +304,19 @@ def read_data_reports(
             entry = crud.get_data_entry_for_school(db, report_id=report.id, school_id=current_school_id)
             report_dict['is_submitted'] = (entry and entry.submitted_at is not None)
         
-        response_reports.append(schemas.DataReport(**report_dict))
+        response_reports.append(report_dict)
         
     return response_reports
 
-@app.get("/data-reports/{report_id}/schema", response_model=Dict[str, Any])
-def get_data_report_schema(report_id: int, db: Session = Depends(get_db)):
-    report = db.query(models.DataReport).filter(models.DataReport.id == report_id).first()
-    if not report:
-        raise HTTPException(status_code=404, detail="Báo cáo không tồn tại.")
-    return {"columns_schema": report.columns_schema}
 
+@app.get("/data-reports/{report_id}/schema")
+def get_data_report_schema(report_id: int, db: Session = Depends(get_db)):
+    """
+    Trả về schema nhập liệu kèm 'description' để client/admin hiển thị nội dung yêu cầu.
+    Không đổi format trường 'columns_schema' để tránh ảnh hưởng UI hiện có.
+    """
+    payload = crud.get_data_report_with_schema(db, report_id)
+    return payload
 @app.get("/data-reports/{report_id}/my-submission", response_model=schemas.DataSubmissionCreate)
 def get_my_data_submission(
     report_id: int, db: Session = Depends(get_db),
@@ -465,3 +472,190 @@ def handle_reset_database(payload: ResetPayload, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
     return {"message": message}
 
+@app.get("/admin/compliance-summary/export-excel")
+def export_compliance_summary_to_excel(
+    kind: str = Query("both", pattern="^(file|data|both)$"),
+    start: str = Query(..., description="ISO datetime, e.g., 2025-08-01T00:00:00Z"),
+    end: str = Query(..., description="ISO datetime, e.g., 2025-08-31T23:59:59Z"),
+    school_year_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Xuất Excel tổng hợp với 3 sheet độc lập:
+      - Đúng hạn   : trường có ontime_count > 0 (chỉ cột 'Số lần đúng hạn')
+      - Trễ hạn    : trường có late_count   > 0
+      - Không nộp  : trường có missing_count> 0
+
+    Một trường có thể xuất hiện ở nhiều sheet nếu có phát sinh ở các loại khác nhau.
+    """
+    # Import style NGAY TRONG HÀM để tránh NameError
+    from openpyxl.styles import Font, Alignment
+
+    # Parse thời gian ISO (hỗ trợ 'Z')
+    try:
+        start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+        end_dt = datetime.fromisoformat(end.replace('Z', '+00:00'))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid time format (use ISO 8601, e.g. '...Z').")
+
+    # Lấy dữ liệu tổng hợp từ CRUD
+    summary = crud.compute_compliance_summary(
+        db=db, start=start_dt, end=end_dt, school_year_id=school_year_id, kind=kind
+    )
+
+    # Gộp tất cả trường để có đủ 3 chỉ số cho mỗi trường
+    all_schools = {}  # id -> {name, ontime_count, late_count, missing_count}
+    def _merge(items):
+        for it in items or []:
+            sid = it.get("id")
+            if sid is None:
+                continue
+            ref = all_schools.setdefault(sid, {"name": it.get("name", ""),
+                                               "ontime_count": 0, "late_count": 0, "missing_count": 0})
+            ref["name"] = it.get("name", ref["name"])
+            ref["ontime_count"]  += int(it.get("ontime_count", 0) or 0)
+            ref["late_count"]    += int(it.get("late_count", 0) or 0)
+            ref["missing_count"] += int(it.get("missing_count", 0) or 0)
+
+    _merge(summary.get("ontime"))
+    _merge(summary.get("late"))
+    _merge(summary.get("missing"))
+
+    # Tạo workbook
+    output = io.BytesIO()
+    wb = openpyxl.Workbook()
+    # bỏ sheet mặc định
+    wb.remove(wb.active)
+
+    header_font = Font(bold=True)
+    center = Alignment(horizontal='center', vertical='center')
+
+    def autosize(ws):
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                val = "" if cell.value is None else str(cell.value)
+                if len(val) > max_len:
+                    max_len = len(val)
+            ws.column_dimensions[col_letter].width = min(max_len + 2, 60)
+
+    def write_sheet(title: str, label: str, key: str):
+        ws = wb.create_sheet(title)
+        ws.append(["STT", "Tên trường", label])
+        for c in ws[1]:
+            c.font = header_font
+            c.alignment = center
+        stt = 0
+        rows = [(sid, info) for sid, info in all_schools.items() if int(info.get(key, 0) or 0) > 0]
+        rows.sort(key=lambda x: x[1].get("name", ""))
+        for _, info in rows:
+            stt += 1
+            ws.append([stt, info.get("name", ""), int(info.get(key, 0) or 0)])
+        autosize(ws)
+
+    write_sheet("Đúng hạn",   "Số lần đúng hạn",   "ontime_count")
+    write_sheet("Trễ hạn",     "Số lần trễ hạn",    "late_count")
+    write_sheet("Không nộp",   "Số lần không nộp",  "missing_count")
+
+    # Nếu hoàn toàn rỗng
+    if not any(int(v.get("ontime_count", 0) or 0) for v in all_schools.values()) \
+       and not any(int(v.get("late_count", 0) or 0) for v in all_schools.values()) \
+       and not any(int(v.get("missing_count", 0) or 0) for v in all_schools.values()):
+        ws = wb.create_sheet("Không có dữ liệu")
+        ws.append(["Không có dữ liệu báo cáo cho kỳ hạn đã chọn."])
+
+    wb.save(output)
+    output.seek(0)
+    filename = f"tong_hop_{kind}_{start_dt.strftime('%Y%m%d%H%M%S')}_{end_dt.strftime('%Y%m%d%H%M%S')}.xlsx"
+    headers = {"Content-Disposition": f'attachment; filename=\"{filename}\"'}
+    return StreamingResponse(output, headers=headers,
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+@app.get("/admin/compliance-summary/export-excel")
+def export_compliance_summary(
+    kind: str = Query("both", regex="^(file|data|both)$"),
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    school_year_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Xuất Excel tổng hợp theo 3 sheet:
+      - Đúng hạn:   liệt kê trường có ontime_count > 0, cột 'Số lần đúng hạn'
+      - Trễ hạn:    liệt kê trường có late_count   > 0, cột 'Số lần trễ hạn'
+      - Không nộp:  liệt kê trường có missing_count> 0, cột 'Số lần không nộp'
+
+    Ghi chú:
+    - Dữ liệu lấy từ crud.compute_compliance_summary (đã chuẩn hóa UTC, logic xấu nhất).
+    - Không lẫn số liệu loại khác trên từng sheet để tránh gây hiểu nhầm.
+    """
+    # Lấy dữ liệu tổng hợp
+    summary = crud.compute_compliance_summary(
+        db=db,
+        start=start,
+        end=end,
+        school_year_id=school_year_id,
+        kind=kind,  # "file" | "data" | "both"
+    )
+
+    # Tạo workbook
+    wb = openpyxl.Workbook()
+    # Sheet mặc định sẽ dùng cho "Đúng hạn"
+    ws_ontime = wb.active
+    ws_ontime.title = "Đúng hạn"
+    ws_late = wb.create_sheet("Trễ hạn")
+    ws_missing = wb.create_sheet("Không nộp")
+
+    def autosize(ws):
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                try:
+                    length = len(str(cell.value)) if cell.value is not None else 0
+                    if length > max_len:
+                        max_len = length
+                except Exception:
+                    pass
+            ws.column_dimensions[col_letter].width = min(max_len + 2, 60)
+
+    def write_sheet(ws, title_count_col: str, rows: list[dict], key: str):
+        """
+        ws: worksheet
+        title_count_col: nhãn cột số lần (VD: 'Số lần đúng hạn')
+        rows: danh sách dict từ summary['ontime'|'late'|'missing']
+        key: trường đếm trong dict ('ontime_count' | 'late_count' | 'missing_count')
+        """
+        # Header
+        ws.append(["STT", "Tên trường", title_count_col])
+        # Body: chỉ schools có count > 0
+        stt = 0
+        for item in rows:
+            count = int(item.get(key, 0) or 0)
+            if count <= 0:
+                continue
+            stt += 1
+            ws.append([stt, item.get("name", ""), count])
+        autosize(ws)
+
+    # Ghi từng sheet
+    write_sheet(ws_ontime, "Số lần đúng hạn", summary.get("ontime", []), "ontime_count")
+    write_sheet(ws_late,   "Số lần trễ hạn",  summary.get("late",   []), "late_count")
+    write_sheet(ws_missing,"Số lần không nộp",summary.get("missing",[]), "missing_count")
+
+    # Xuất ra stream
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    filename = f"bao_cao_tong_hop_{kind}_{start.strftime('%Y%m%d%H%M%S')}_{end.strftime('%Y%m%d%H%M%S')}.xlsx"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )

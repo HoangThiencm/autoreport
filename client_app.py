@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QHeaderView, QFrame, QTabWidget, QListWidget, QListWidgetItem,
     QProgressBar, QSplitter, QTextEdit
 )
-from PySide6.QtCore import Qt, QDateTime, Signal, QUrl, QByteArray, QThread, QObject, QUrlQuery
+from PySide6.QtCore import Qt, QDateTime, Signal, QUrl, QByteArray, QThread, QObject, QUrlQuery, Slot
 from PySide6.QtGui import QFont, QIcon, QColor
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
@@ -29,6 +29,16 @@ from spreadsheet_widget import SpreadsheetWidget, ColumnSpec
 
 API_URL = "https://auto-report-backend.onrender.com"
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller tạo một thư mục tạm và lưu đường dẫn trong _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+    
 def get_app_data_path(filename):
     app_data_dir = os.path.join(os.path.expanduser('~'), '.auto_report_client')
     os.makedirs(app_data_dir, exist_ok=True)
@@ -99,10 +109,21 @@ class ListItemWidget(QWidget):
     def __init__(self, item_id, title, deadline, attachment_url, is_submitted, is_reminded, is_locked, parent=None):
         super().__init__(parent)
         self.item_id = item_id
+
+        # Layout chính, ngang
         layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(10)
+
+        # === Cột trái: Tiêu đề và Hạn chót ===
         info_layout = QVBoxLayout()
+        info_layout.setSpacing(2)
         
+        # --- Logic xử lý văn bản và màu sắc ---
         title_text = f"<b>ID {item_id}: {title}</b>"
+        if attachment_url:
+            title_text += " 📎"
+            
         status_text = "Đã hoàn thành" if is_submitted else "Chưa thực hiện"
         status_color = '#27ae60' if is_submitted else '#e74c3c'
         
@@ -110,35 +131,41 @@ class ListItemWidget(QWidget):
             title_text = f"<b>ID {item_id}: {title} (Đã khóa)</b>"
             status_text = "Đã khóa"
             status_color = '#7f8c8d'
-            self.setStyleSheet("background-color: #f2f2f2;")
+            self.setStyleSheet("background-color: #f2f2f2; border-radius: 5px;")
         elif is_reminded and not is_submitted:
-            self.setStyleSheet("background-color: #fff3cd;")
+            self.setStyleSheet("background-color: #fff3cd; border-radius: 5px;")
             title_text = f"<b>ID {item_id}: {title} (Cần chú ý!)</b>"
-            
+        # --- Kết thúc logic ---
+
         title_label = QLabel(title_text)
+        title_label.setWordWrap(True)
+        
         deadline_label = QLabel(f"Hạn chót: {deadline}")
+        deadline_label.setStyleSheet("color: #555;")
+
         info_layout.addWidget(title_label)
         info_layout.addWidget(deadline_label)
+        info_layout.addStretch()
+
+        # === Cột phải: Trạng thái và Nút hành động ===
+        action_layout = QVBoxLayout()
+        action_layout.setAlignment(Qt.AlignCenter)
         
         status_label = QLabel(status_text)
         status_label.setStyleSheet(f"color: {status_color}; font-weight: bold;")
+        action_layout.addWidget(status_label)
         
-        # === PHẦN SỬA ĐỔI ===
-        action_widget = QWidget()
-        action_layout = QVBoxLayout(action_widget)
-        action_layout.setContentsMargins(0, 0, 0, 0)
-        action_layout.addWidget(status_label, alignment=Qt.AlignCenter)
-        
-        # Nếu có attachment_url, tạo và hiển thị nút
         if attachment_url:
-            btn = QPushButton("Xem File Kèm Theo")
+            # Rút ngắn văn bản và điều chỉnh kích thước nút
+            btn = QPushButton("Xem File")
             btn.setCursor(Qt.PointingHandCursor)
-            # Kết nối sự kiện click để mở URL trong trình duyệt
+            btn.setStyleSheet("padding: 5px 12px; font-size: 13px;")
             btn.clicked.connect(lambda _, url=attachment_url: webbrowser.open(url))
             action_layout.addWidget(btn)
-
-        layout.addLayout(info_layout, 1)
-        layout.addWidget(action_widget)
+        
+        # Thêm các cột vào layout chính
+        layout.addLayout(info_layout, 1)  # Cột trái sẽ co giãn
+        layout.addLayout(action_layout, 0) # Cột phải chỉ chiếm không gian cần thiết
 
 
 
@@ -148,18 +175,16 @@ class FileTaskItemWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
 
-        # Top line: Title
         self.title_label = QLabel(title)
+        self.title_label.setWordWrap(True) # CHO PHÉP TỰ ĐỘNG XUỐNG DÒNG
         self.title_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         layout.addWidget(self.title_label)
 
-        # Bottom line: Deadline and Status
         bottom_layout = QHBoxLayout()
         
         deadline_str = deadline_dt.strftime("%H:%M %d/%m/%Y")
         self.deadline_label = QLabel(f"Hạn: {deadline_str}")
         
-        # Check if overdue
         if not is_submitted and datetime.now() > deadline_dt:
              self.deadline_label.setText(f"<b>QUÁ HẠN: {deadline_str}</b>")
              self.deadline_label.setStyleSheet("color: #e74c3c;")
@@ -167,7 +192,6 @@ class FileTaskItemWidget(QWidget):
         bottom_layout.addWidget(self.deadline_label)
         bottom_layout.addStretch()
 
-        # Status text and color
         if is_locked and not is_submitted:
             status_text, status_color = "Đã khóa", "#7f8c8d"
             self.setStyleSheet("background-color: #f2f2f2; border-radius: 5px;")
@@ -193,7 +217,7 @@ class ClientWindow(QMainWindow):
         super().__init__()
         self.network_manager = QNetworkAccessManager(self)
         self.setWindowTitle("Hệ thống Báo cáo - phiên bản dành cho trường học")
-        if os.path.exists('baocao.ico'): self.setWindowIcon(QIcon('baocao.ico'))
+        self.setWindowIcon(QIcon(resource_path('baocao.ico')))
         self.setGeometry(200, 200, 1100, 800)
         
         self.setStyleSheet("""
@@ -220,17 +244,15 @@ class ClientWindow(QMainWindow):
             QTabBar::tab:!selected:hover { background-color: #e9ecef; }
         """)
 
-        # Initialize properties
         self.api_key = self.load_api_key()
         self.drive_service = None
         self.user_email = None
+        self.current_displayed_report_id = None
 
-        # Setup main layout
         central_widget = QWidget()
         self.layout = QVBoxLayout(central_widget)
         self.setCentralWidget(central_widget)
 
-        # Create UI components
         self.create_api_key_ui()
         self.tab_widget = QTabWidget()
         self.file_submission_tab = QWidget()
@@ -242,57 +264,115 @@ class ClientWindow(QMainWindow):
         self.create_file_submission_ui()
         self.create_data_entry_ui()
 
-        # Connect signals
         self.authentication_successful.connect(self.on_authentication_success)
         self.upload_complete_signal.connect(self.handle_final_submission)
 
-        # Initial state setup
         self.update_ui_for_api_key()
         if self.api_key:
             self.fetch_school_info()
         else:
             QMessageBox.information(self, "Chào mừng", "Vui lòng nhập Mã API được cung cấp và nhấn 'Lưu'.")
 
-    # --- API Communication ---
     def _handle_reply(self, reply: QNetworkReply, on_success: Callable, on_error: Callable):
-        if reply.error() == QNetworkReply.NoError:
-            status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
-            response_data = bytes(reply.readAll()).decode('utf-8')
-            if 200 <= status_code < 300:
-                try:
-                    on_success(json.loads(response_data) if response_data else {}, {})
-                except json.JSONDecodeError:
-                    on_error(status_code, "Lỗi giải mã JSON từ server.")
+        try:
+            if reply.error() == QNetworkReply.NoError:
+                status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+                if status_code is None:
+                    status_code = 200
+                raw = bytes(reply.readAll())
+                if 200 <= int(status_code) < 300:
+                    try:
+                        text = raw.decode('utf-8') if raw else ''
+                        on_success(json.loads(text) if text else {}, {})
+                    except Exception:
+                        on_error(int(status_code), "Lỗi giải mã JSON từ server.")
+                else:
+                    on_error(int(status_code), raw.decode('utf-8', errors='ignore'))
             else:
-                on_error(status_code, response_data)
-        else:
-            on_error(0, f"Lỗi mạng: {reply.errorString()}")
-        reply.deleteLater()
+                on_error(0, f"Lỗi mạng: {reply.errorString()}")
+        finally:
+            reply.deleteLater()
 
-    def api_get(self, endpoint: str, on_success: Callable, on_error: Callable, headers: dict = None, params: dict = None):
+    def api_get(self, endpoint: str, on_success: Callable, on_error: Callable,
+                headers: dict = None, params: dict = None):
         url = QUrl(f"{API_URL}{endpoint}")
         if params:
-            query = QUrlQuery()
+            q = QUrlQuery()
             for k, v in params.items():
-                if v is not None: # SỬA LỖI: Chỉ thêm tham số nếu giá trị khác None
-                    query.addQueryItem(k, str(v))
-            url.setQuery(query)
-        req = QNetworkRequest(url)
-        if headers:
-            for k, v in headers.items(): req.setRawHeader(k.encode(), v.encode())
-        reply = self.network_manager.get(req)
-        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+                if v is not None:
+                    q.addQueryItem(k, str(v))
+            url.setQuery(q)
 
-    def api_post(self, endpoint: str, data: dict, on_success: Callable, on_error: Callable, headers: dict = None):
-        req = QNetworkRequest(QUrl(f"{API_URL}{endpoint}"))
-        req.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
-        if headers:
-            for k, v in headers.items(): req.setRawHeader(k.encode(), v.encode())
-        payload = QByteArray(json.dumps(data, ensure_ascii=False).encode('utf-8'))
-        reply = self.network_manager.post(req, payload)
-        reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
+        def do_get(url_obj: QUrl, redirects_left: int = 5):
+            req = QNetworkRequest(url_obj)
+            req.setRawHeader(b"Accept", b"application/json,*/*")
+            req.setRawHeader(b"User-Agent", b"ClientApp/1.0")
+            if headers:
+                for k, v in headers.items():
+                    req.setRawHeader(k.encode(), v.encode())
 
-    # --- UI Creation ---
+            reply = self.network_manager.get(req)
+
+            def finished():
+                if reply.error() != QNetworkReply.NoError:
+                    self._handle_reply(reply, on_success, on_error)
+                    return
+
+                status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+                if status_code and 300 <= int(status_code) < 400 and redirects_left > 0:
+                    red_attr = getattr(QNetworkRequest, "RedirectionTargetAttribute", None)
+                    target = reply.attribute(red_attr) if red_attr is not None else None
+                    reply.readAll()
+                    reply.deleteLater()
+                    if target:
+                        new_url = url_obj.resolved(target) if isinstance(target, QUrl) else QUrl(str(target))
+                        do_get(new_url, redirects_left - 1)
+                        return
+
+                self._handle_reply(reply, on_success, on_error)
+
+            reply.finished.connect(finished)
+
+        do_get(url)
+
+    def api_post(self, endpoint: str, data: dict, on_success: Callable, on_error: Callable,
+                 headers: dict = None):
+        url = QUrl(f"{API_URL}{endpoint}")
+
+        def do_post(url_obj: QUrl, redirects_left: int = 5):
+            req = QNetworkRequest(url_obj)
+            req.setHeader(QNetworkRequest.ContentTypeHeader, "application/json")
+            req.setRawHeader(b"Accept", b"application/json,*/*")
+            req.setRawHeader(b"User-Agent", b"ClientApp/1.0")
+            if headers:
+                for k, v in headers.items():
+                    req.setRawHeader(k.encode(), v.encode())
+
+            payload = QByteArray(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+            reply = self.network_manager.post(req, payload)
+
+            def finished():
+                if reply.error() != QNetworkReply.NoError:
+                    self._handle_reply(reply, on_success, on_error)
+                    return
+
+                status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
+                if status_code and 300 <= int(status_code) < 400 and redirects_left > 0:
+                    red_attr = getattr(QNetworkRequest, "RedirectionTargetAttribute", None)
+                    target = reply.attribute(red_attr) if red_attr is not None else None
+                    reply.readAll()
+                    reply.deleteLater()
+                    if target:
+                        new_url = url_obj.resolved(target) if isinstance(target, QUrl) else QUrl(str(target))
+                        do_post(new_url, redirects_left - 1)
+                        return
+
+                self._handle_reply(reply, on_success, on_error)
+
+            reply.finished.connect(finished)
+
+        do_post(url)
+
     def create_api_key_ui(self):
         card = QFrame()
         card.setObjectName("card")
@@ -553,77 +633,169 @@ class ClientWindow(QMainWindow):
         self.upload_complete_signal.emit(task_id, file_url)
         self.submit_file_button.setDisabled(False)
         self.progress_bar.hide()
-
+    
+    @Slot()
     def load_data_reports(self):
         if not self.api_key: return
         self.load_dr_button.setDisabled(True)
         self.load_dr_button.setText("Đang tải...")
+
         def on_success(reports, _):
             self.dr_list_widget.clear()
-            for report in reports:
-                deadline_dt = datetime.strptime(report['deadline'], "%Y-%m-%dT%H:%M:%S")
-                deadline_str = deadline_dt.strftime("%H:%M %d/%m/%Y")
-                is_submitted = report.get('is_submitted', False)
-                is_reminded = report.get('is_reminded', False)
-                is_locked = report.get('is_locked', False)
-                attachment_url = report.get('attachment_url')
-                list_item = QListWidgetItem(self.dr_list_widget)
-                list_item.setData(Qt.UserRole, report)
-                item_widget = ListItemWidget(
-                    report['id'], report['title'], deadline_str,
-                    attachment_url, is_submitted, is_reminded, is_locked
-                )
-                list_item.setSizeHint(item_widget.sizeHint())
-                self.dr_list_widget.setItemWidget(list_item, item_widget)
+            self.display_data_report_sheet(None, None)
+            
+            if not reports:
+                placeholder_item = QListWidgetItem("Không có báo cáo nào.")
+                placeholder_item.setFlags(Qt.NoItemFlags)
+                self.dr_list_widget.addItem(placeholder_item)
+            else:
+                reports.sort(key=lambda r: r.get('deadline', ''), reverse=True)
+                for report in reports:
+                    deadline_str = "N/A"
+                    if report.get('deadline'):
+                        try:
+                            deadline_dt = datetime.strptime(report['deadline'], "%Y-%m-%dT%H:%M:%S")
+                            deadline_str = deadline_dt.strftime("%H:%M %d/%m/%Y")
+                        except ValueError:
+                            deadline_str = report['deadline']
+                    
+                    is_submitted = report.get('is_submitted', False)
+                    is_reminded = report.get('is_reminded', False)
+                    is_locked = report.get('is_locked', False)
+                    
+                    list_item = QListWidgetItem(self.dr_list_widget)
+                    list_item.setData(Qt.UserRole, report)
+                    
+                    item_widget = ListItemWidget(
+                        item_id=report['id'],
+                        title=report['title'],
+                        deadline=deadline_str,
+                        attachment_url=report.get('attachment_url'),
+                        is_submitted=is_submitted,
+                        is_reminded=is_reminded,
+                        is_locked=is_locked
+                    )
+                    list_item.setSizeHint(item_widget.sizeHint())
+                    self.dr_list_widget.setItemWidget(list_item, item_widget)
+                    
             self.load_dr_button.setDisabled(False)
             self.load_dr_button.setText("Làm mới")
+
         def on_error(s, e):
-            handle_api_error(self, s, e, "Không thể tải danh sách báo cáo nhập liệu.")
+            handle_api_error(self, s, e, "Lỗi tải danh sách báo cáo.")
             self.load_dr_button.setDisabled(False)
             self.load_dr_button.setText("Làm mới")
+
         self.api_get("/data-reports/", on_success, on_error, headers={"x-api-key": self.api_key})
 
+    @Slot(QListWidgetItem, QListWidgetItem)
     def display_data_report_sheet(self, current_item, previous_item):
-        for i in reversed(range(self.spreadsheet_layout.count())): self.spreadsheet_layout.itemAt(i).widget().setParent(None)
+        # Xóa layout cũ một lần duy nhất
+        for i in reversed(range(self.spreadsheet_layout.count())):
+            widget = self.spreadsheet_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+
         if not current_item:
+            self.current_displayed_report_id = None
             self.dr_status_label = QLabel("Vui lòng chọn một báo cáo từ danh sách bên trái.")
             self.dr_status_label.setAlignment(Qt.AlignCenter)
             self.spreadsheet_layout.addWidget(self.dr_status_label)
             return
+
         report_data = current_item.data(Qt.UserRole)
         report_id = report_data['id']
+        self.current_displayed_report_id = report_id
         is_locked = report_data.get('is_locked', False)
-        attachment_url = report_data.get('attachment_url')
-        loading_label = QLabel(f"Đang tải biểu mẫu cho '{report_data['title']}'..."); self.spreadsheet_layout.addWidget(loading_label)
-        def on_schema_error(s, e): 
-            for i in reversed(range(self.spreadsheet_layout.count())): self.spreadsheet_layout.itemAt(i).widget().setParent(None)
-            error_label = QLabel(f"Lỗi tải biểu mẫu: {e}"); self.spreadsheet_layout.addWidget(error_label)
+
+        title_label = QLabel(report_data.get('title', 'N/A'))
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
+        title_label.setWordWrap(True)
+        self.spreadsheet_layout.addWidget(title_label)
+        
+        dynamic_content_widget = QWidget()
+        self.dynamic_layout = QVBoxLayout(dynamic_content_widget)
+        self.spreadsheet_layout.addWidget(dynamic_content_widget, 1)
+
+        loading_label = QLabel("Đang tải chi tiết báo cáo và biểu mẫu...")
+        self.dynamic_layout.addWidget(loading_label)
+
+        def on_schema_error(s, e):
+            if report_id != self.current_displayed_report_id: return
+            try:
+                for i in reversed(range(self.dynamic_layout.count())): self.dynamic_layout.itemAt(i).widget().setParent(None)
+                error_label = QLabel(f"Lỗi tải chi tiết báo cáo: {e}")
+                self.dynamic_layout.addWidget(error_label)
+            except RuntimeError:
+                print("Race condition caught: on_schema_error")
+
         def on_schema_success(schema_data, _):
-            def on_submission_error(s, e):
-                for i in reversed(range(self.spreadsheet_layout.count())): self.spreadsheet_layout.itemAt(i).widget().setParent(None)
-                error_label = QLabel(f"Lỗi tải dữ liệu đã nộp: {e}"); self.spreadsheet_layout.addWidget(error_label)
-            def on_submission_success(submission_data, _):
-                for i in reversed(range(self.spreadsheet_layout.count())): self.spreadsheet_layout.itemAt(i).widget().setParent(None)
-                columns = [ColumnSpec(**c) for c in schema_data["columns_schema"]]
-                if is_locked and not report_data.get('is_submitted', False):
-                    locked_label = QLabel("🔴 Admin đã khoá danh sách này. Không thể nhập liệu.")
-                    locked_label.setAlignment(Qt.AlignCenter)
-                    locked_label.setStyleSheet("color: red; font-weight: bold; font-size: 14px; margin-bottom: 10px;")
-                    self.spreadsheet_layout.addWidget(locked_label)
+            if report_id != self.current_displayed_report_id: return
+            try:
+                for i in reversed(range(self.dynamic_layout.count())): self.dynamic_layout.itemAt(i).widget().setParent(None)
+
+                description = schema_data.get("description")
+                if description:
+                    desc_label = QLabel("<b>Nội dung yêu cầu:</b>")
+                    desc_text = QTextEdit(description)
+                    desc_text.setReadOnly(True)
+                    desc_text.setMaximumHeight(150)
+                    self.dynamic_layout.addWidget(desc_label)
+                    self.dynamic_layout.addWidget(desc_text)
+                    
+                attachment_url = schema_data.get("attachment_url")
                 if attachment_url:
                     attachment_btn = QPushButton("Mở/Tải File Hướng Dẫn")
                     attachment_btn.clicked.connect(lambda: webbrowser.open(attachment_url))
-                    self.spreadsheet_layout.addWidget(attachment_btn)
-                sheet = SpreadsheetWidget(columns, self)
-                sheet.set_data(submission_data.get("data", []))
-                def save_data(records):
-                    def on_save_success(d, h): QMessageBox.information(self, "Thành công", "Đã lưu dữ liệu.")
-                    def on_save_error(s, e): handle_api_error(self, s, e, "Lỗi lưu dữ liệu.")
-                    self.api_post(f"/data-reports/{report_id}/submit", {"data": records}, on_save_success, on_save_error, headers={"x-api-key": self.api_key})
-                sheet.saved.connect(save_data)
-                self.spreadsheet_layout.addWidget(sheet)
-                if is_locked: sheet.setEnabled(False)
-            self.api_get(f"/data-reports/{report_id}/my-submission", on_submission_success, on_submission_error, headers={"x-api-key": self.api_key})
+                    self.dynamic_layout.addWidget(attachment_btn)
+
+                separator = QFrame()
+                separator.setFrameShape(QFrame.HLine); separator.setFrameShadow(QFrame.Sunken)
+                self.dynamic_layout.addWidget(separator)
+                
+                def on_submission_error(s, e):
+                    if report_id != self.current_displayed_report_id: return
+                    try:
+                        error_label = QLabel(f"Lỗi tải dữ liệu đã nộp: {e}")
+                        self.dynamic_layout.addWidget(error_label)
+                    except RuntimeError:
+                        print("Race condition caught: on_submission_error")
+
+                def on_submission_success(submission_data, _):
+                    if report_id != self.current_displayed_report_id: return
+                    try:
+                        columns = [ColumnSpec(**c) for c in schema_data["columns_schema"]]
+                        
+                        if is_locked and not report_data.get('is_submitted', False):
+                            locked_label = QLabel("🔴 Admin đã khoá báo cáo này. Không thể nhập liệu.")
+                            locked_label.setAlignment(Qt.AlignCenter)
+                            locked_label.setStyleSheet("color: red; font-weight: bold; font-size: 14px; margin: 10px;")
+                            self.dynamic_layout.addWidget(locked_label)
+
+                        sheet = SpreadsheetWidget(columns, self)
+                        sheet.set_data(submission_data.get("data", []))
+                        
+                        def save_data(records):
+                            def on_save_success(d, h): 
+                                QMessageBox.information(self, "Thành công", "Đã nộp báo cáo và lưu dữ liệu thành công!")
+                                # Tải lại danh sách báo cáo để cập nhật trạng thái
+                                self.load_data_reports()
+                                # Xóa lựa chọn hiện tại để làm mới giao diện chi tiết
+                                # và buộc người dùng thấy trạng thái đã được cập nhật trong danh sách.
+                                self.dr_list_widget.setCurrentRow(-1)
+                            def on_save_error(s, e): handle_api_error(self, s, e, "Lỗi lưu dữ liệu.")
+                            self.api_post(f"/data-reports/{report_id}/submit", {"data": records}, on_save_success, on_save_error, headers={"x-api-key": self.api_key})
+                        
+                        sheet.saved.connect(save_data)
+                        self.dynamic_layout.addWidget(sheet)
+                        if is_locked: sheet.setEnabled(False)
+                    except RuntimeError:
+                        print("Race condition caught: on_submission_success")
+
+                self.api_get(f"/data-reports/{report_id}/my-submission", on_submission_success, on_submission_error, headers={"x-api-key": self.api_key})
+            except RuntimeError:
+                print("Race condition caught: on_schema_success")
+
         self.api_get(f"/data-reports/{report_id}/schema", on_schema_success, on_schema_error, headers={"x-api-key": self.api_key})
 
 if __name__ == "__main__":
@@ -631,3 +803,4 @@ if __name__ == "__main__":
     window = ClientWindow()
     window.show()
     sys.exit(app.exec())
+

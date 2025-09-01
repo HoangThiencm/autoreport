@@ -59,6 +59,7 @@ class DataReport(Base):
     __tablename__ = "data_reports"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     title = Column(String, index=True, nullable=False)
+    description = Column(String, nullable=True)
     deadline = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_notification_sent = Column(Boolean, default=False)

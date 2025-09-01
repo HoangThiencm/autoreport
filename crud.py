@@ -1,6 +1,7 @@
 import os.path
 import re
 import io
+from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 from unidecode import unidecode
 from typing import Optional, Set, List, Tuple, Dict, Any, Literal
@@ -201,8 +202,6 @@ def update_school_year(db: Session, school_year_id: int, school_year_update: sch
         db.refresh(db_school_year)
     return db_school_year
 
-# ... (giữ nguyên các hàm còn lại của file)
-# ...
 def get_schools(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.School).order_by(models.School.name).offset(skip).limit(limit).all()
 
@@ -275,6 +274,7 @@ def get_file_tasks(
 
     tasks = tasks[skip: skip + limit]
     return tasks, reminded_task_ids
+
 def create_file_task(db: Session, task: schemas.FileTaskCreate):
     db_task = models.FileTask(**task.dict())
     db.add(db_task)
@@ -299,6 +299,7 @@ def update_file_task(db: Session, task_id: int, task_update: schemas.FileTaskUpd
         db.commit()
         db.refresh(db_task)
     return db_task
+
 def get_file_task_by_id(db: Session, task_id: int):
     return db.query(models.FileTask).filter(models.FileTask.id == task_id).first()
 
@@ -353,11 +354,12 @@ def create_data_report(db: Session, report: schemas.DataReportCreate,
                        target_school_ids: Optional[List[int]] = None) -> models.DataReport:
     db_report = models.DataReport(
         title=report.title,
+        description=report.description,
         deadline=report.deadline,
         school_year_id=report.school_year_id,
         columns_schema=[col.dict() for col in report.columns_schema],
         template_data=report.template_data,
-        attachment_url=report.attachment_url # <-- THÊM DÒNG NÀY
+        attachment_url=report.attachment_url
     )
     db.add(db_report)
     db.commit()
@@ -372,7 +374,7 @@ def create_data_report(db: Session, report: schemas.DataReportCreate,
         db.add(models.DataEntry(report_id=db_report.id, school_id=s.id, data=report.template_data, submitted_at=None))
     db.commit()
     return db_report
-    
+       
 def create_or_update_data_submission(db: Session, report_id: int, school_id: int, submission_data: List[Dict[str, Any]]) -> Optional[models.DataEntry]:
     entry = db.query(models.DataEntry).filter_by(report_id=report_id, school_id=school_id).first()
     
@@ -571,14 +573,28 @@ def create_file_task_with_targets(
     task: schemas.FileTaskCreate,
     target_school_ids: Optional[List[int]] = None
 ):
-    # Dòng task.dict() sẽ tự động lấy cả 'attachment_url' từ schema
+    """
+    SỬA LỖI LOGIC: Khi một yêu cầu nộp file được tạo cho "Tất cả",
+    hàm này sẽ tạo bản ghi TaskReminder cho TẤT CẢ các trường hiện có.
+    Điều này làm cho việc giao nhiệm vụ trở nên rõ ràng và giúp truy vấn báo cáo nhanh hơn nhiều.
+    """
     db_task = models.FileTask(**task.dict())
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
 
-    if target_school_ids:
-        for sid in target_school_ids:
+    ids_to_assign = []
+    if target_school_ids is None:
+        # Nếu target_school_ids là None, có nghĩa là giao cho TẤT CẢ các trường
+        all_schools = db.query(models.School.id).all()
+        ids_to_assign = [s.id for s in all_schools]
+    else:
+        # Ngược lại, chỉ giao cho các trường được chỉ định
+        ids_to_assign = target_school_ids
+
+    if ids_to_assign:
+        for sid in ids_to_assign:
+            # Tạo một "lời nhắc" (thực chất là bản ghi giao nhiệm vụ) cho mỗi trường
             db.add(models.TaskReminder(task_type="file", task_id=db_task.id, school_id=sid))
         db.commit()
 
@@ -592,113 +608,255 @@ def compute_compliance_summary(
     kind: Literal["file", "data", "both"] = "both"
 ) -> Dict[str, Any]:
     """
-    Tính cho từng TRƯỜNG trong giai đoạn [start, end]:
-      - assigned_count: số task/báo cáo được giao trong kỳ
-      - ontime_count : số đã nộp và nộp ĐÚNG HẠN
-      - late_count   : số đã nộp nhưng TRỄ HẠN
-      - missing_count: số KHÔNG NỘP
-    Phân nhóm trường:
-      - ontime : assigned_count>0 và missing_count==0 và late_count==0
-      - late   : assigned_count>0 và late_count>0 và missing_count==0
-      - missing: assigned_count>0 và missing_count>0
+    Tổng hợp tình trạng nộp theo khoảng thời gian [start, end].
+    - Chuẩn hóa thời gian sang UTC để so sánh ổn định trên Render/localhost.
+    - Tính trạng thái RIÊNG cho 'file' và 'data':
+        -1 = không được giao, 0 = thiếu, 1 = trễ, 2 = đúng hạn
+    - Nếu kind='both': lấy trạng thái "tốt nhất" giữa 2 loại (2 > 1 > 0 > -1).
+      Như vậy một trường có ít nhất 1 hạng mục đúng hạn sẽ KHÔNG bị xếp chung vào "không nộp".
     """
-    # Lấy danh sách trường
+    from datetime import timezone
+
+    # Chuẩn hóa mốc thời gian
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+
+    # Khởi tạo bảng trạng thái theo trường
     schools = db.query(models.School).all()
+    school_map = {s.id: s for s in schools}
     per_school = {
-        s.id: {"id": s.id, "name": s.name, "assigned": 0, "ontime": 0, "late": 0, "missing": 0}
+        s.id: {
+            "id": s.id,
+            "name": s.name,
+            # trạng thái từng loại
+            "file_status": -1,
+            "data_status": -1,
+            # đếm giao & kết quả (tham khảo/xuất thêm)
+            "file_assigned": 0, "file_ontime": 0, "file_late": 0, "file_missing": 0,
+            "data_assigned": 0, "data_ontime": 0, "data_late": 0, "data_missing": 0,
+        }
         for s in schools
     }
 
-    def _handle_file_tasks():
+    def _score_from_counts(ontime, late, missing, assigned):
+        """Trả về điểm: -1/0/1/2 (không giao/thiếu/trễ/đúng hạn)."""
+        if assigned == 0:
+            return -1
+        if missing > 0:
+            return 0
+        if late > 0:
+            return 1
+        if ontime > 0:
+            return 2
+        return 0
+
+    # ====== FILE TASKS ======
+    if kind in ("file", "both"):
         q = db.query(models.FileTask).filter(
-            models.FileTask.deadline >= start,
-            models.FileTask.deadline <= end # SỬA LỖI: Sử dụng <= thay vì < để bao gồm cả ngày kết thúc
+            models.FileTask.deadline >= start_utc,
+            models.FileTask.deadline <= end_utc
         )
         if school_year_id:
             q = q.filter(models.FileTask.school_year_id == school_year_id)
         tasks = q.all()
 
-        for t in tasks:
-            # Xác định "được giao" (eligible schools) theo logic hiện có
-            # - nếu có TaskReminder ràng buộc: chỉ các trường đó
-            # - nếu không: tất cả các trường
-            target_ids = [sid for (sid,) in db.query(models.TaskReminder.school_id)
+        if tasks:
+            task_ids = [t.id for t in tasks]
+            # submissions & reminders
+            submissions = db.query(models.FileSubmission)\
+                            .filter(models.FileSubmission.task_id.in_(task_ids)).all()
+            reminders = db.query(models.TaskReminder)\
                           .filter(models.TaskReminder.task_type == "file",
-                                  models.TaskReminder.task_id == t.id).all()]
-            if target_ids:
-                eligible = [s for s in schools if s.id in target_ids]
-            else:
-                eligible = schools
+                                  models.TaskReminder.task_id.in_(task_ids)).all()
 
-            sub_map = {sub.school_id: sub for sub in t.submissions}
+            sub_map: Dict[int, Dict[int, models.FileSubmission]] = {}
+            for sub in submissions:
+                sub_map.setdefault(sub.task_id, {})[sub.school_id] = sub
 
-            for s in eligible:
-                per_school[s.id]["assigned"] += 1
-                sub = sub_map.get(s.id)
-                if not sub:
-                    per_school[s.id]["missing"] += 1
-                else:
-                    if sub.submitted_at and sub.submitted_at <= t.deadline:
-                        per_school[s.id]["ontime"] += 1
+            # TaskReminder thể hiện trường nào được giao (assigned)
+            rem_map: Dict[int, Set[int]] = {}
+            for rem in reminders:
+                rem_map.setdefault(rem.task_id, set()).add(rem.school_id)
+
+            for task in tasks:
+                # ❗ FIX: nếu task KHÔNG có bất kỳ reminder nào ⇒ coi như giao CHO TẤT CẢ TRƯỜNG
+                eligible_school_ids = rem_map.get(task.id)
+                if not eligible_school_ids:
+                    eligible_school_ids = set(school_map.keys())
+
+                # chuẩn hóa deadline UTC
+                deadline_utc = (task.deadline.replace(tzinfo=timezone.utc)
+                                if task.deadline.tzinfo is None else
+                                task.deadline.astimezone(timezone.utc))
+                task_subs = sub_map.get(task.id, {})
+
+                for sid in eligible_school_ids:
+                    if sid not in per_school:
+                        continue
+                    ps = per_school[sid]
+                    ps["file_assigned"] += 1
+                    sub = task_subs.get(sid)
+                    if not sub or not sub.submitted_at:
+                        ps["file_missing"] += 1
                     else:
-                        per_school[s.id]["late"] += 1
+                        submitted_utc = (sub.submitted_at.replace(tzinfo=timezone.utc)
+                                         if sub.submitted_at.tzinfo is None else
+                                         sub.submitted_at.astimezone(timezone.utc))
+                        if submitted_utc <= deadline_utc:
+                            ps["file_ontime"] += 1
+                        else:
+                            ps["file_late"] += 1
 
-    def _handle_data_reports():
+        # Gán điểm trạng thái file cho từng trường
+        for ps in per_school.values():
+            ps["file_status"] = _score_from_counts(
+                ps["file_ontime"], ps["file_late"], ps["file_missing"], ps["file_assigned"]
+            )
+
+    # ====== DATA REPORTS ======
+    if kind in ("data", "both"):
         q = db.query(models.DataReport).filter(
-            models.DataReport.deadline >= start,
-            models.DataReport.deadline <= end # SỬA LỖI: Sử dụng <= thay vì < để bao gồm cả ngày kết thúc
+            models.DataReport.deadline >= start_utc,
+            models.DataReport.deadline <= end_utc
         )
         if school_year_id:
             q = q.filter(models.DataReport.school_year_id == school_year_id)
         reports = q.all()
 
-        for r in reports:
-            # Target là các School đã có DataEntry được tạo cho report
-            entry_map = {e.school_id: e for e in r.entries}
-            target_ids = list(entry_map.keys())
-            if not target_ids:
-                continue
-            target_schools = [s for s in schools if s.id in target_ids]
+        if reports:
+            report_ids = [r.id for r in reports]
+            entries = db.query(models.DataEntry)\
+                        .filter(models.DataEntry.report_id.in_(report_ids)).all()
+            # Map report -> {school_id: entry}
+            entry_map: Dict[int, Dict[int, models.DataEntry]] = {r.id: {} for r in reports}
+            for e in entries:
+                entry_map.setdefault(e.report_id, {})[e.school_id] = e
 
-            for s in target_schools:
-                per_school[s.id]["assigned"] += 1
-                e = entry_map.get(s.id)
-                if not e or not e.submitted_at:
-                    per_school[s.id]["missing"] += 1
-                else:
-                    if e.submitted_at <= r.deadline:
-                        per_school[s.id]["ontime"] += 1
+            for report in reports:
+                deadline_utc = (report.deadline.replace(tzinfo=timezone.utc)
+                                if report.deadline.tzinfo is None else
+                                report.deadline.astimezone(timezone.utc))
+                assigned_school_ids = set(entry_map.get(report.id, {}).keys())
+
+                for sid in assigned_school_ids:
+                    if sid not in per_school:
+                        continue
+                    ps = per_school[sid]
+                    ps["data_assigned"] += 1
+                    entry = entry_map[report.id].get(sid)
+                    if not entry or not entry.submitted_at:
+                        ps["data_missing"] += 1
                     else:
-                        per_school[s.id]["late"] += 1
+                        submitted_utc = (entry.submitted_at.replace(tzinfo=timezone.utc)
+                                         if entry.submitted_at.tzinfo is None else
+                                         entry.submitted_at.astimezone(timezone.utc))
+                        if submitted_utc <= deadline_utc:
+                            ps["data_ontime"] += 1
+                        else:
+                            ps["data_late"] += 1
 
-    if kind in ("file", "both"):
-        _handle_file_tasks()
-    if kind in ("data", "both"):
-        _handle_data_reports()
+        # Gán điểm trạng thái data cho từng trường
+        for ps in per_school.values():
+            ps["data_status"] = _score_from_counts(
+                ps["data_ontime"], ps["data_late"], ps["data_missing"], ps["data_assigned"]
+            )
 
-    # Gom nhóm
+    # ====== HỢP NHẤT KẾT QUẢ THEO 'kind' ======
     ontime, late, missing = [], [], []
-    for s in per_school.values():
-        assigned = s["assigned"]
-        if assigned == 0:
-            continue  # không bị giao gì trong kỳ -> bỏ qua
-        entry = {
-            "id": s["id"], "name": s["name"],
-            "assigned_count": assigned,
-            "ontime_count": s["ontime"],
-            "late_count": s["late"],
-            "missing_count": s["missing"],
-        }
-        if s["missing"] > 0:
-            missing.append(entry)
-        elif s["late"] > 0:
-            late.append(entry)
-        else:
-            ontime.append(entry)
 
-    # Sắp xếp nhẹ theo tên trường
+    def _push(target_list, ps, assigned_total, ontime_total, late_total, missing_total):
+        target_list.append({
+            "id": ps["id"],
+            "name": ps["name"],
+            "assigned_count": assigned_total,
+            "ontime_count": ontime_total,
+            "late_count": late_total,
+            "missing_count": missing_total,
+        })
+
+    for ps in per_school.values():
+        if kind == "file":
+            if ps["file_assigned"] == 0:
+                continue
+            score = ps["file_status"]
+            if score == 2:
+                _push(ontime, ps, ps["file_assigned"], ps["file_ontime"], ps["file_late"], ps["file_missing"])
+            elif score == 1:
+                _push(late, ps, ps["file_assigned"], ps["file_ontime"], ps["file_late"], ps["file_missing"])
+            elif score == 0:
+                _push(missing, ps, ps["file_assigned"], ps["file_ontime"], ps["file_late"], ps["file_missing"])
+
+        elif kind == "data":
+            if ps["data_assigned"] == 0:
+                continue
+            score = ps["data_status"]
+            if score == 2:
+                _push(ontime, ps, ps["data_assigned"], ps["data_ontime"], ps["data_late"], ps["data_missing"])
+            elif score == 1:
+                _push(late, ps, ps["data_assigned"], ps["data_ontime"], ps["data_late"], ps["data_missing"])
+            elif score == 0:
+                _push(missing, ps, ps["data_assigned"], ps["data_ontime"], ps["data_late"], ps["data_missing"])
+
+        else:  # kind == "both"
+            # Gộp theo trạng thái "tốt nhất" giữa file và data
+            score = max(ps["file_status"], ps["data_status"])
+            assigned_total = ps["file_assigned"] + ps["data_assigned"]
+            ontime_total = ps["file_ontime"] + ps["data_ontime"]
+            late_total = ps["file_late"] + ps["data_late"]
+            missing_total = ps["file_missing"] + ps["data_missing"]
+
+            if assigned_total == 0:
+                continue
+
+            if score == 2:
+                _push(ontime, ps, assigned_total, ontime_total, late_total, missing_total)
+            elif score == 1:
+                _push(late, ps, assigned_total, ontime_total, late_total, missing_total)
+            else:  # 0 hoặc -1 (không nên có -1 nếu assigned_total > 0)
+                _push(missing, ps, assigned_total, ontime_total, late_total, missing_total)
+
+    # Sắp xếp theo tên
     ontime.sort(key=lambda x: x["name"])
     late.sort(key=lambda x: x["name"])
     missing.sort(key=lambda x: x["name"])
 
     return {"ontime": ontime, "late": late, "missing": missing}
+
+
+def get_data_entry_for_school(db: Session, report_id: int, school_id: int) -> Optional[models.DataEntry]:
+    """Lấy bản ghi nộp báo cáo nhập liệu của một trường cụ thể."""
+    return db.query(models.DataEntry).filter(
+        models.DataEntry.report_id == report_id,
+        models.DataEntry.school_id == school_id
+    ).first()
+
+def get_data_report_with_schema(db: Session, report_id: int) -> Dict[str, Any]:
+    """
+    Trả về payload schema cho DataReport kèm 'description' (nội dung yêu cầu) và 'attachment_url' (nếu có).
+    - An toàn: nếu model chưa có cột 'description' hoặc 'attachment_url' thì trả về chuỗi rỗng / None.
+    - Không thay đổi cấu trúc cũ: 'columns_schema' giữ nguyên như trước để client hiển thị bảng nhập liệu.
+    """
+    report = db.query(models.DataReport).filter(models.DataReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo nhập liệu.")
+
+    # columns_schema có thể là list/dict JSON tuỳ thiết kế cũ
+    columns_schema = report.columns_schema if hasattr(report, "columns_schema") else []
+
+    # Lấy mô tả yêu cầu nếu có cột; nếu chưa có cột -> trả ""
+    description = getattr(report, "description", "") or ""
+    
+    # Lấy link hướng dẫn nếu DataReport có cột này (không bắt buộc)
+    attachment_url = getattr(report, "attachment_url", None)
+
+    # Một số DB để tên là 'name' thay vì 'title'
+    title = getattr(report, "title", None) or getattr(report, "name", f"Báo cáo #{report.id}")
+
+    return {
+        "id": report.id,
+        "title": title,
+        "deadline": report.deadline,
+        "columns_schema": columns_schema,
+        "description": description,
+        "attachment_url": attachment_url,
+    }

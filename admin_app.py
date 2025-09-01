@@ -23,6 +23,16 @@ from spreadsheet_widget import SpreadsheetWidget, ColumnSpec
 
 API_URL = "https://auto-report-backend.onrender.com"
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller tạo một thư mục tạm và lưu đường dẫn trong _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 def handle_api_error(self, status_code, response_text, context_message):
     detail = response_text
     try:
@@ -58,10 +68,11 @@ class Paginator:
         self.has_next = (count >= self.page_size)
 
 class DataReportListItemWidget(QWidget):
-    def __init__(self, report_id, title, deadline, schema, template_data, is_locked, attachment_url, parent=None):
+    def __init__(self, report_id, title, deadline, schema, template_data, is_locked, attachment_url, description, parent=None):
         super().__init__(parent)
         self.report_id = report_id
         self.title = title
+        self.description = description
         self.deadline_str = deadline
         self.columns_schema = schema
         self.template_data = template_data
@@ -123,16 +134,21 @@ class DataReportListItemWidget(QWidget):
         title_edit = QLineEdit(self.title)
         layout.addWidget(title_edit, 0, 1)
         
-        layout.addWidget(QLabel("Hạn chót:"), 1, 0)
+        layout.addWidget(QLabel("Nội dung/Mô tả:"), 1, 0)
+        description_edit = QTextEdit(self.description)
+        description_edit.setPlaceholderText("Nhập mô tả chi tiết hoặc hướng dẫn cho báo cáo...")
+        layout.addWidget(description_edit, 1, 1)
+        
+        layout.addWidget(QLabel("Hạn chót:"), 2, 0)
         deadline_edit = QDateTimeEdit(QDateTime.fromString(self.deadline_str, "HH:mm dd/MM/yyyy"))
         deadline_edit.setCalendarPopup(True)
         deadline_edit.setDisplayFormat("HH:mm dd/MM/yyyy")
-        layout.addWidget(deadline_edit, 1, 1)
+        layout.addWidget(deadline_edit, 2, 1)
 
         design_button = QPushButton("Sửa thiết kế biểu mẫu...")
-        layout.addWidget(design_button, 2, 1)
+        layout.addWidget(design_button, 3, 1)
 
-        layout.addWidget(QLabel("File đính kèm:"), 3, 0)
+        layout.addWidget(QLabel("File đính kèm:"), 4, 0)
         attachment_layout = QHBoxLayout()
         temp_attachment_url = self.attachment_url
         attachment_label = QLabel(os.path.basename(temp_attachment_url) if temp_attachment_url else "Chưa có file.")
@@ -159,7 +175,7 @@ class DataReportListItemWidget(QWidget):
         attachment_btn = QPushButton("Chọn file khác...")
         attachment_btn.clicked.connect(select_new_attachment)
         attachment_layout.addWidget(attachment_btn)
-        layout.addLayout(attachment_layout, 3, 1)
+        layout.addLayout(attachment_layout, 4, 1)
 
         temp_schema = self.columns_schema
         temp_data = self.template_data
@@ -177,11 +193,12 @@ class DataReportListItemWidget(QWidget):
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box, 4, 0, 1, 2)
+        layout.addWidget(button_box, 5, 0, 1, 2)
         
         if dialog.exec():
             payload = {
                 "title": title_edit.text().strip(),
+                "description": description_edit.toPlainText().strip(),
                 "deadline": deadline_edit.dateTime().toString("yyyy-MM-dd'T'HH:mm:ss"),
                 "columns_schema": temp_schema,
                 "template_data": temp_data,
@@ -548,8 +565,7 @@ class AdminWindow(QMainWindow):
         super().__init__()
         self.network_manager = QNetworkAccessManager(self)
         self.setWindowTitle("Bảng điều khiển cho Quản trị viên")
-        if os.path.exists('baocao.ico'):
-            self.setWindowIcon(QIcon('baocao.ico'))
+        self.setWindowIcon(QIcon(resource_path('baocao.ico')))
         self.setGeometry(100, 100, 1400, 850)
         self.setFont(QFont("Segoe UI", 10))
         
@@ -654,20 +670,66 @@ class AdminWindow(QMainWindow):
         reply = self.network_manager.deleteResource(req)
         reply.finished.connect(lambda: self._handle_reply(reply, on_success, on_error))
 
-    def api_download(self, endpoint: str, on_success: Callable, on_error: Callable):
-        req = QNetworkRequest(QUrl(f"{API_URL}{endpoint}"))
-        reply = self.network_manager.get(req)
-        def handle_download_reply():
-            if reply.error() == QNetworkReply.NoError:
+    def api_download(self, endpoint: str, on_success: Callable, on_error: Callable, params: dict = None):
+        # Xây URL + query
+        url = QUrl(f"{API_URL}{endpoint}")
+        if params:
+            q = QUrlQuery()
+            for k, v in params.items():
+                if v is not None:
+                    q.addQueryItem(k, str(v))
+            url.setQuery(q)
+
+        # Gửi GET và tự theo redirect (không dùng FollowRedirectsAttribute)
+        def do_get(url_obj: QUrl, redirects_left: int = 5):
+            req = QNetworkRequest(url_obj)
+            req.setTransferTimeout(60000)
+            req.setRawHeader(
+                b"Accept",
+                b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*",
+            )
+            req.setRawHeader(b"User-Agent", b"AdminApp/1.0")
+
+            reply = self.network_manager.get(req)
+
+            def finished():
+                # Lỗi mạng
+                if reply.error() != QNetworkReply.NoError:
+                    on_error(0, f"Lỗi mạng: {reply.errorString()}")
+                    reply.deleteLater()
+                    return
+
+                # Mã trạng thái
                 status_code = reply.attribute(QNetworkRequest.HttpStatusCodeAttribute)
-                if status_code == 200:
-                    on_success(reply.readAll())
+                status_code = int(status_code) if status_code is not None else 200
+
+                # Redirect 30x → lấy URL đích và lặp lại (nếu còn quota)
+                if 300 <= status_code < 400 and redirects_left > 0:
+                    red_attr = getattr(QNetworkRequest, "RedirectionTargetAttribute", None)
+                    target = reply.attribute(red_attr) if red_attr is not None else None
+                    # Giải phóng reply cũ trước khi đi tiếp
+                    reply.readAll()
+                    reply.deleteLater()
+                    if target:
+                        new_url = url_obj.resolved(target) if isinstance(target, QUrl) else QUrl(str(target))
+                        do_get(new_url, redirects_left - 1)
+                    else:
+                        on_error(status_code, "Phản hồi chuyển hướng nhưng không có URL đích.")
+                    return
+
+                # Thành công 2xx → trả bytes về on_success
+                if 200 <= status_code < 300:
+                    data_bytes = bytes(reply.readAll())
+                    on_success(data_bytes)
                 else:
-                    on_error(status_code, bytes(reply.readAll()).decode('utf-8'))
-            else:
-                on_error(0, f"Lỗi mạng: {reply.errorString()}")
-            reply.deleteLater()
-        reply.finished.connect(handle_download_reply)
+                    err_body = bytes(reply.readAll()).decode("utf-8", errors="ignore")
+                    on_error(status_code, err_body)
+
+                reply.deleteLater()
+
+            reply.finished.connect(finished)
+
+        do_get(url)
 
     def api_upload_file(self, endpoint: str, file_path: str, on_success: Callable, on_error: Callable):
         url = QUrl(f"{API_URL}{endpoint}")
@@ -678,15 +740,18 @@ class AdminWindow(QMainWindow):
         file_part = QHttpPart()
         file_name = os.path.basename(file_path)
         try:
+            # Cố gắng encode tên file sang ASCII để tương thích tốt hơn
             file_name_ascii = file_name.encode('ascii').decode('utf-8')
         except UnicodeEncodeError:
+            # Nếu tên file có dấu, chuyển sang dạng không dấu
             from unidecode import unidecode
             file_name_ascii = unidecode(file_name)
 
-        file_part.setHeader(QNetworkRequest.ContentDispositionHeader, f'form-data; name="file"; filename="{file_name_ascii}"')
+        # SỬA LỖI: Thay QNetworkRequest.Header -> QNetworkRequest.KnownHeaders
+        file_part.setHeader(QNetworkRequest.KnownHeaders.ContentDispositionHeader, f'form-data; name="file"; filename="{file_name_ascii}"')
         
         file_device = QFile(file_path)
-        if not file_device.open(QIODevice.ReadOnly):
+        if not file_device.open(QIODevice.OpenModeFlag.ReadOnly):
             on_error(0, "Không thể mở file để đọc.")
             return
             
@@ -969,22 +1034,27 @@ class AdminWindow(QMainWindow):
         design_layout.addWidget(QLabel("Tiêu đề báo cáo:"), 2, 0)
         self.dr_title_input = QLineEdit()
         design_layout.addWidget(self.dr_title_input, 2, 1)
+
+        design_layout.addWidget(QLabel("Nội dung/Mô tả:"), 3, 0)
+        self.dr_description_input = QTextEdit()
+        self.dr_description_input.setPlaceholderText("Nhập mô tả chi tiết hoặc hướng dẫn cho báo cáo...")
+        design_layout.addWidget(self.dr_description_input, 3, 1)
         
         self.design_schema_button = QPushButton("Thiết kế Bảng nhập liệu")
         self.design_schema_button.clicked.connect(self.open_schema_designer)
-        design_layout.addWidget(self.design_schema_button, 3, 1)
+        design_layout.addWidget(self.design_schema_button, 4, 1)
 
         self.dr_design_status_label = QLabel("Trạng thái thiết kế: Chưa có.")
         self.dr_design_status_label.setStyleSheet("font-style: italic; color: #6c757d;")
-        design_layout.addWidget(self.dr_design_status_label, 4, 1)
+        design_layout.addWidget(self.dr_design_status_label, 5, 1)
 
-        design_layout.addWidget(QLabel("Hạn chót:"), 5, 0)
+        design_layout.addWidget(QLabel("Hạn chót:"), 6, 0)
         self.dr_deadline_input = QDateTimeEdit(QDateTime.currentDateTime().addDays(7))
         self.dr_deadline_input.setCalendarPopup(True)
         self.dr_deadline_input.setDisplayFormat("HH:mm dd/MM/yyyy")
-        design_layout.addWidget(self.dr_deadline_input, 5, 1)
+        design_layout.addWidget(self.dr_deadline_input, 6, 1)
 
-        design_layout.addWidget(QLabel("File đính kèm:"), 6, 0)
+        design_layout.addWidget(QLabel("File đính kèm:"), 7, 0)
         dr_attachment_layout = QHBoxLayout()
         self.dr_attachment_label = QLabel("Chưa có file.")
         self.dr_attachment_label.setStyleSheet("font-style: italic; color: #888;")
@@ -992,12 +1062,12 @@ class AdminWindow(QMainWindow):
         dr_attachment_button.clicked.connect(self.select_dr_attachment)
         dr_attachment_layout.addWidget(self.dr_attachment_label, 1)
         dr_attachment_layout.addWidget(dr_attachment_button)
-        design_layout.addLayout(dr_attachment_layout, 6, 1)
+        design_layout.addLayout(dr_attachment_layout, 7, 1)
         self.dr_attachment_url = None
 
-        design_layout.addWidget(QLabel("Phát hành cho:"), 7, 0)
+        design_layout.addWidget(QLabel("Phát hành cho:"), 8, 0)
         scope_row = QHBoxLayout()
-        design_layout.addLayout(scope_row, 7, 1)
+        design_layout.addLayout(scope_row, 8, 1)
 
         self.scope_selector = QComboBox()
         self.scope_selector.addItems(["Tất cả trường", "Theo nhóm", "Chọn trường"])
@@ -1016,7 +1086,7 @@ class AdminWindow(QMainWindow):
 
         self.add_dr_button = QPushButton("Ban hành Báo cáo")
         self.add_dr_button.clicked.connect(self.add_new_data_report)
-        design_layout.addWidget(self.add_dr_button, 8, 1, alignment=Qt.AlignRight)
+        design_layout.addWidget(self.add_dr_button, 9, 1, alignment=Qt.AlignRight)
         
         list_card = QFrame()
         list_card.setObjectName("card")
@@ -1375,6 +1445,7 @@ class AdminWindow(QMainWindow):
     def add_new_data_report(self):
         school_year_id = self.dr_school_year_selector.currentData()
         title = self.dr_title_input.text().strip()
+        description = self.dr_description_input.toPlainText().strip()
         if not all([title, school_year_id]): 
             QMessageBox.warning(self,"Thiếu thông tin","Vui lòng nhập Tiêu đề và chọn Năm học.")
             return
@@ -1398,6 +1469,7 @@ class AdminWindow(QMainWindow):
 
         payload = {
             "title": title,
+            "description": description,
             "deadline": self.dr_deadline_input.dateTime().toString("yyyy-MM-dd'T'HH:mm:ss"),
             "school_year_id": school_year_id,
             "columns_schema": self.current_report_schema,
@@ -1411,6 +1483,7 @@ class AdminWindow(QMainWindow):
         def on_success(d, h):
             QMessageBox.information(self, "Thành công", "Đã ban hành báo cáo mới.")
             self.dr_title_input.clear()
+            self.dr_description_input.clear()
             self.current_report_schema = []
             self.current_report_data = []
             self._custom_selected_school_ids = set()
@@ -1428,7 +1501,7 @@ class AdminWindow(QMainWindow):
             self.add_dr_button.setDisabled(False)
             self.add_dr_button.setText("Ban hành Báo cáo")
         self.api_post("/data-reports/", payload, on_success, on_error)
-       
+         
     def load_data_reports(self):
         school_year_id = self.dr_school_year_selector.currentData()
         params = {
@@ -1447,7 +1520,8 @@ class AdminWindow(QMainWindow):
                     schema=r.get('columns_schema', []),
                     template_data=r.get('template_data'),
                     is_locked=r.get('is_locked', False),
-                    attachment_url=r.get('attachment_url')
+                    attachment_url=r.get('attachment_url'),
+                    description=r.get('description', '')
                 )
                 it = QListWidgetItem(self.data_reports_list_widget)
                 it.setSizeHint(w.sizeHint())
@@ -1993,6 +2067,7 @@ class AdminWindow(QMainWindow):
         card = QFrame(objectName="card"); parent_layout.addWidget(card)
         v = QVBoxLayout(card)
         v.addWidget(QLabel("<b>BÁO CÁO TỔNG HỢP THEO KỲ HẠN</b>"))
+        v.addWidget(QLabel("Chức năng này cho phép xuất ra file Excel danh sách các trường theo mức độ hoàn thành báo cáo trong một khoảng thời gian."))
 
         row = QHBoxLayout()
         self.cb_kind = QComboBox(); self.cb_kind.addItems(["Cả hai", "Nộp file", "Nhập liệu"])
@@ -2005,40 +2080,46 @@ class AdminWindow(QMainWindow):
         self.cb_period.currentIndexChanged.connect(self._update_summary_datetime_widgets)
         self.sy_for_summary.currentIndexChanged.connect(self._update_summary_datetime_widgets)
 
-        row.addWidget(QLabel("Loại:")); row.addWidget(self.cb_kind)
+        row.addWidget(QLabel("Loại BC:"))
+        row.addWidget(self.cb_kind)
         row.addSpacing(10)
-        row.addWidget(QLabel("Kỳ hạn:")); row.addWidget(self.cb_period)
+        row.addWidget(QLabel("Kỳ hạn:"))
+        row.addWidget(self.cb_period)
         row.addSpacing(10)
-        row.addWidget(QLabel("Năm học:")); row.addWidget(self.sy_for_summary, 1)
+        row.addWidget(QLabel("Năm học:"))
+        row.addWidget(self.sy_for_summary, 1)
         row.addSpacing(10)
-        row.addWidget(QLabel("Từ:")); row.addWidget(self.dt_start)
-        row.addWidget(QLabel("Đến:")); row.addWidget(self.dt_end)
+        row.addWidget(QLabel("Từ ngày:"))
+        row.addWidget(self.dt_start)
+        row.addWidget(QLabel("Đến ngày:"))
+        row.addWidget(self.dt_end)
         v.addLayout(row)
 
-        self.btn_summary = QPushButton("Tổng hợp"); self.btn_summary.clicked.connect(self.run_compliance_summary)
-        v.addWidget(self.btn_summary, alignment=Qt.AlignRight)
+        self.btn_export_summary = QPushButton("Xuất báo cáo ra Excel")
+        self.btn_export_summary.setIcon(QIcon(resource_path('baocao.ico')))
+        self.btn_export_summary.setStyleSheet("background-color: #16a085; padding: 10px; font-size: 14px;") # Green color
+        self.btn_export_summary.clicked.connect(self.run_export_compliance_summary)
+        v.addWidget(self.btn_export_summary, alignment=Qt.AlignRight)
 
-        def _make_table(title):
-            box = QFrame(objectName="card")
-            lay = QVBoxLayout(box)
-            lay.addWidget(QLabel(f"<b>{title}</b>"))
-            tbl = QTableWidget(0, 5)
-            tbl.setHorizontalHeaderLabels(["STT", "Trường", "Giao", "Đúng hạn", "Trễ / Không nộp"])
-            tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-            lay.addWidget(tbl)
-            v.addWidget(box)
-            return tbl
+        v.addStretch()
 
-        self.tbl_ontime  = _make_table("ĐÚNG HẠN")
-        self.tbl_late    = _make_table("TRỄ HẠN")
-        self.tbl_missing = _make_table("KHÔNG BÁO CÁO")
-
-        def on_ok(data, _):
+        # SỬA LỖI: Cải thiện logic tải và xử lý lỗi cho danh sách năm học
+        def on_school_year_success(data, _):
             self._school_year_cache = data
             self.sy_for_summary.clear()
-            for sy in data: self.sy_for_summary.addItem(sy['name'], sy['id'])
+            if not data:
+                self.sy_for_summary.addItem("Chưa có năm học nào")
+            else:
+                for sy in data:
+                    self.sy_for_summary.addItem(sy['name'], sy['id'])
             self._update_summary_datetime_widgets()
-        self.api_get("/school_years/", on_ok, lambda s,e: None)
+
+        def on_school_year_error(status_code, error_text):
+            self.sy_for_summary.clear()
+            self.sy_for_summary.addItem("Lỗi tải danh sách")
+            handle_api_error(self, status_code, error_text, "Không thể tải danh sách năm học cho mục tổng hợp.")
+
+        self.api_get("/school_years/", on_school_year_success, on_school_year_error)
 
     def _update_summary_datetime_widgets(self):
         import datetime as _dt
@@ -2097,114 +2178,55 @@ class AdminWindow(QMainWindow):
             self.dt_start.setDateTime(start_qdt)
             self.dt_end.setDateTime(end_qdt)
             
-    def run_compliance_summary(self):
+    def run_export_compliance_summary(self):
         sy_id = self.sy_for_summary.currentData()
         kind_map = {"Cả hai": "both", "Nộp file": "file", "Nhập liệu": "data"}
         kind = kind_map.get(self.cb_kind.currentText(), "both")
 
-        import datetime as _dt
-        import calendar
+        start_qdt = self.dt_start.dateTime()
+        end_qdt = self.dt_end.dateTime()
 
-        # Hàm nội bộ để gửi request, GIỮ NGUYÊN logic — CHỈ sửa format thời gian sang UTC có 'Z'
-        def _send_request(start_qdt: QDateTime, end_qdt: QDateTime):
-            # Chuyển đổi QDateTime sang UTC
-            start_utc = start_qdt.toTimeZone(QTimeZone.utc())
-            end_utc = end_qdt.toTimeZone(QTimeZone.utc())
+        if start_qdt >= end_qdt:
+            QMessageBox.warning(self, "Lỗi", "Ngày bắt đầu phải trước ngày kết thúc.")
+            return
 
-            # ✅ Sửa tại đây: định dạng ISO-8601 có hậu tố 'Z' để backend parse UTC chính xác
-            start_str = start_utc.toString("yyyy-MM-dd'T'HH:mm:ss'Z'")
-            end_str = end_utc.toString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+        # Convert QDateTime (local) to UTC and format as ISO 8601 string with 'Z'
+        start_utc = start_qdt.toTimeZone(QTimeZone.utc())
+        end_utc = end_qdt.toTimeZone(QTimeZone.utc())
+        start_str = start_utc.toString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+        end_str = end_utc.toString("yyyy-MM-dd'T'HH:mm:ss'Z'")
 
-            params = {"kind": kind, "start": start_str, "end": end_str}
-            if sy_id is not None:
-                params["school_year_id"] = sy_id
+        params = {"kind": kind, "start": start_str, "end": end_str}
+        if sy_id is not None:
+            params["school_year_id"] = sy_id
+        
+        default_filename = f"tong_hop_ky_han_{start_qdt.toString('yyyyMMdd')}_{end_qdt.toString('yyyyMMdd')}.xlsx"
+        save_path, _ = QFileDialog.getSaveFileName(self, "Lưu file Excel", default_filename, "Excel Files (*.xlsx)")
+        
+        if not save_path:
+            return
 
-            self.btn_summary.setDisabled(True); self.btn_summary.setText("Đang tổng hợp...")
+        self.btn_export_summary.setDisabled(True)
+        self.btn_export_summary.setText("Đang xử lý...")
 
-            def on_ok(data, _):
-                def _fill(tbl, items):
-                    tbl.setRowCount(len(items))
-                    for i, it in enumerate(items, 1):
-                        tbl.setItem(i - 1, 0, QTableWidgetItem(str(i)))
-                        tbl.setItem(i - 1, 1, QTableWidgetItem(it['name']))
-                        tbl.setItem(i - 1, 2, QTableWidgetItem(str(it['assigned_count'])))
-                        tbl.setItem(i - 1, 3, QTableWidgetItem(str(it['ontime_count'])))
-                        tbl.setItem(i - 1, 4, QTableWidgetItem(f"{it['late_count']} / {it['missing_count']}"))
-                self.tbl_ontime.setRowCount(0); self.tbl_late.setRowCount(0); self.tbl_missing.setRowCount(0)
-                _fill(self.tbl_ontime, data.get("ontime", []))
-                _fill(self.tbl_late, data.get("late", []))
-                _fill(self.tbl_missing, data.get("missing", []))
-                self.btn_summary.setDisabled(False); self.btn_summary.setText("Tổng hợp")
+        def on_success(data_bytes):
+            try:
+                with open(save_path, 'wb') as f:
+                    f.write(data_bytes)
+                QMessageBox.information(self, "Thành công", f"Đã lưu file Excel báo cáo tại:\n{save_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Lỗi", f"Không thể ghi file: {e}")
+            finally:
+                self.btn_export_summary.setDisabled(False)
+                self.btn_export_summary.setText("Xuất báo cáo ra Excel")
 
-            def on_err(s, e):
-                handle_api_error(self, s, e, "Không thể tổng hợp.")
-                self.btn_summary.setDisabled(False); self.btn_summary.setText("Tổng hợp")
+        def on_error(s, e):
+            handle_api_error(self, s, e, "Không thể xuất file Excel.")
+            self.btn_export_summary.setDisabled(False)
+            self.btn_export_summary.setText("Xuất báo cáo ra Excel")
 
-            self.api_get("/admin/compliance-summary", on_ok, on_err, params=params)
-
-        # LUỒNG CHÍNH: Xác định khoảng thời gian
-        sel = self.cb_period.currentText()
-        if sel == "Tùy chọn...":
-            # Lấy QDateTime trực tiếp từ widget (local time), _send_request sẽ tự chuyển UTC
-            start_qdt = self.dt_start.dateTime()
-            end_qdt = self.dt_end.dateTime()
-            _send_request(start_qdt, end_qdt)
-        else:
-            if sy_id is None and sel != "Tháng hiện tại":
-                QMessageBox.warning(self, "Thiếu dữ liệu", "Vui lòng chọn Năm học khi sử dụng các kỳ hạn định sẵn.")
-                return
-
-            # Lấy thông tin năm học khi cần
-            def on_ok(sy_list, _):
-                sy_info = None
-                if sy_id is not None:
-                    for it in sy_list:
-                        if it["id"] == sy_id:
-                            sy_info = it
-                            break
-
-                # Tính start/end (Python datetime, local) cho các kỳ hạn
-                if sel == "Tháng hiện tại":
-                    today = _dt.date.today()
-                    start_dt_py = _dt.datetime(today.year, today.month, 1, 0, 0, 0)
-                    _, last_day = calendar.monthrange(today.year, today.month)
-                    end_dt_py = _dt.datetime(today.year, today.month, last_day, 23, 59, 59)
-                else:  # Các trường hợp còn lại đều cần sy_info
-                    sy_start = _dt.datetime.fromisoformat(sy_info['start_date'] + "T00:00:00")
-                    sy_end = _dt.datetime.fromisoformat(sy_info['end_date'] + "T23:59:59")
-                    start_dt_py, end_dt_py = sy_start, sy_end
-
-                    if sel == "Toàn năm học":
-                        pass
-                    elif sel == "Học kỳ 1":
-                        hk1_end = _dt.datetime(sy_start.year, 12, 31, 23, 59, 59)
-                        end_dt_py = min(hk1_end, sy_end)
-                    elif sel == "Học kỳ 2":
-                        hk2_year = sy_start.year + 1 if sy_start.month >= 8 else sy_start.year
-                        hk2_start = _dt.datetime(hk2_year, 1, 1, 0, 0, 0)
-                        start_dt_py = max(hk2_start, sy_start)
-
-                # Đổi Python datetime -> QDateTime (LOCAL), _send_request sẽ chuyển UTC
-                local_tz = QTimeZone.systemTimeZone()
-
-                start_qdate = QDate(start_dt_py.year, start_dt_py.month, start_dt_py.day)
-                start_qtime = QTime(start_dt_py.hour, start_dt_py.minute, start_dt_py.second)
-                start_qdt = QDateTime(start_qdate, start_qtime, local_tz)
-
-                end_qdate = QDate(end_dt_py.year, end_dt_py.month, end_dt_py.day)
-                end_qtime = QTime(end_dt_py.hour, end_dt_py.minute, end_dt_py.second)
-                end_qdt = QDateTime(end_qdate, end_qtime, local_tz)
-
-                _send_request(start_qdt, end_qdt)
-
-            def on_error(s, e):
-                handle_api_error(self, s, e, "Không thể tải danh sách Năm học.")
-                # Kể cả khi có lỗi, vẫn thử tải danh sách công việc để tránh màn hình trống
-                self.load_file_tasks()
-                self.load_data_reports()
-
-            # Lấy danh sách năm học, rồi tính range và gọi tổng hợp
-            self.api_get("/school_years/", on_ok, on_error)
+        # Call the new API endpoint for downloading
+        self.api_download("/admin/compliance-summary/export-excel", on_success, on_error, params=params)
 
     def _fill_school_year_comboboxes(self):
         def on_ok(data, _):
@@ -2246,6 +2268,86 @@ class AdminWindow(QMainWindow):
     def _reload_dr(self):
         self.dr_pager.page = 1
         self.load_data_reports()
+        
+    def show_data_report_schema(self, report_id: int):
+        """
+        Hiển thị chi tiết 'BÁO CÁO NHẬP LIỆU' cho admin:
+        - Tiêu đề, hạn nộp
+        - Nội dung yêu cầu (description)
+        - Nút mở/tải file hướng dẫn (attachment_url)
+        - (Giữ nguyên phần columns_schema để tab khác dùng nếu cần)
+        """
+        # Dọn khu vực hiển thị cũ
+        if hasattr(self, "dr_detail_layout"):
+            for i in reversed(range(self.dr_detail_layout.count())):
+                w = self.dr_detail_layout.itemAt(i).widget()
+                if w:
+                    w.setParent(None)
+
+        loading = QLabel("Đang tải mô tả báo cáo…")
+        loading.setAlignment(Qt.AlignCenter)
+        if hasattr(self, "dr_detail_layout"):
+            self.dr_detail_layout.addWidget(loading)
+
+        def on_error(status_code, err_text):
+            if hasattr(self, "dr_detail_layout"):
+                for i in reversed(range(self.dr_detail_layout.count())):
+                    w = self.dr_detail_layout.itemAt(i).widget()
+                    if w:
+                        w.setParent(None)
+                self.dr_detail_layout.addWidget(QLabel(f"Lỗi tải schema: {err_text}"))
+
+        def on_success(payload, _):
+            # Xóa loading
+            if hasattr(self, "dr_detail_layout"):
+                for i in reversed(range(self.dr_detail_layout.count())):
+                    w = self.dr_detail_layout.itemAt(i).widget()
+                    if w:
+                        w.setParent(None)
+
+            title = payload.get("title") or f"Báo cáo #{payload.get('id', report_id)}"
+            deadline_raw = str(payload.get("deadline", "")).rstrip("Z")
+            try:
+                from datetime import datetime
+                dd = datetime.fromisoformat(deadline_raw)
+                deadline_text = dd.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                deadline_text = deadline_raw
+
+            description = payload.get("description") or ""
+            attachment_url = payload.get("attachment_url")
+
+            # Tiêu đề
+            lb_title = QLabel(f"📋 <b>{title}</b>")
+            lb_title.setTextFormat(Qt.RichText)
+            lb_title.setWordWrap(True)
+
+            # Hạn nộp
+            lb_deadline = QLabel(f"⏰ Hạn nộp: <b>{deadline_text}</b>")
+            lb_deadline.setTextFormat(Qt.RichText)
+
+            # Nội dung yêu cầu (giữ xuống dòng/HTML cơ bản)
+            lb_desc_title = QLabel("<b>Nội dung yêu cầu:</b>")
+            lb_desc = QLabel(description if description else "<i>(Chưa có mô tả)</i>")
+            lb_desc.setWordWrap(True)
+            lb_desc.setTextFormat(Qt.RichText)  # cho phép <br>, <ul> nếu bạn đã nhập HTML
+
+            if hasattr(self, "dr_detail_layout"):
+                self.dr_detail_layout.addWidget(lb_title)
+                self.dr_detail_layout.addWidget(lb_deadline)
+                self.dr_detail_layout.addSpacing(6)
+                self.dr_detail_layout.addWidget(lb_desc_title)
+                self.dr_detail_layout.addWidget(lb_desc)
+
+                # Nút mở/tải file hướng dẫn nếu có
+                if attachment_url:
+                    btn = QPushButton("Mở/Tải File Hướng Dẫn")
+                    btn.clicked.connect(lambda: webbrowser.open(attachment_url))
+                    self.dr_detail_layout.addSpacing(6)
+                    self.dr_detail_layout.addWidget(btn)
+
+        # Gọi API lấy schema (không cần x-api-key cho admin)
+        self.api_get(f"/data-reports/{report_id}/schema", on_success, on_error)
 
 
 if __name__ == "__main__":
